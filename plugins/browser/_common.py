@@ -74,7 +74,9 @@ class CloudBrowserProvider(BrowserProvider):
 
     @staticmethod
     def _session_name(task_id: str) -> str:
-        return f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+        # agent-browser repeats this name in its socket directory and filename.
+        # Task ownership stays in the caller's session map, not the IPC identity.
+        return f"h_{uuid.uuid4().hex[:10]}"
 
     def _post_create(
         self, url: str, headers: dict[str, str], payload: dict[str, object], *, wrap_errors: bool = True
