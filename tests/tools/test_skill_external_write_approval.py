@@ -377,3 +377,66 @@ def test_global_gate_rejects_bad_create_category_before_staging(env, external):
     assert result.get("error") == "Category must be a string.", result
     assert env["wa"].pending_count("skills") == 0
     assert not (env["home"] / "skills" / "new-skill").exists()
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_batch_can_use_a_newly_created_display_alias(env, external):
+    from tools.registry import registry
+    env["configure"](external=external)
+    result = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "created-skill", "action": "create", "content": SK.format(n="new-alias")},
+        {"name": "new-alias", "action": "write_file", "file_path": "references/a.md",
+         "file_content": "Created alias support."},
+    ]}))
+    assert result.get("success") is True, result
+    assert (env["home"] / "skills" / "created-skill" / "references" / "a.md").read_text() == "Created alias support."
+    assert env["wa"].pending_count("skills") == 0
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("external", [False, True])
+def test_batch_ledger_rollback_preserves_a_symlinked_home(env, external):
+    from tools import skill_ledger
+    from tools.registry import registry
+    env["configure"](external=external)
+    home = env["home"]
+    real_home = home.with_name("real-home")
+    home.rename(real_home)
+    home.symlink_to(real_home, target_is_directory=True)
+    created = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "local-skill", "action": "create", "content": SK.format(n="local-skill")},
+    ]}))
+    assert created.get("success") is True, created
+    skill_md = home / "skills" / "local-skill" / "SKILL.md"
+    before = skill_md.read_bytes()
+    changed = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "local-skill", "action": "patch", "old_string": "Step 1.", "new_string": "Step changed."},
+    ]}))
+    assert changed.get("success") is True, changed
+    assert b"Step changed." in skill_md.read_bytes()
+    ok, message = skill_ledger.rollback_entry(skill_ledger.list_entries("local-skill")[0]["id"])
+    assert ok, message
+    assert skill_md.read_bytes() == before
+    assert home.is_symlink()
+
+
+def test_failed_batch_restores_local_metadata_without_touching_shared_skill(env):
+    from tools.registry import registry
+    local = env["home"] / "skills" / "shared-skill"
+    local.mkdir()
+    original = SK.format(n="shared-skill").replace("Step 1.", "Local instructions.")
+    (local / "SKILL.md").write_text(original)
+    shared = env["ext"] / "shared-skill"
+    shared_before = {p.relative_to(shared): p.read_bytes() for p in shared.rglob("*") if p.is_file()}
+    result = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "shared-skill", "action": "remove_file", "file_path": "SKILL.md"},
+        {"name": "shared-skill", "action": "patch", "old_string": "Local instructions.",
+         "new_string": "Changed local instructions."},
+    ]}))
+    assert result.get("success") is False and result.get("failed_index") == 1, result
+    assert (local / "SKILL.md").read_text() == original
+    assert shared.is_dir()
+    assert {p.relative_to(shared): p.read_bytes() for p in shared.rglob("*") if p.is_file()} == shared_before
+    assert not list(env["home"].rglob("*.rollback-broken"))
+    assert not list(env["ext"].rglob("*.rollback-broken"))
+    assert env["wa"].pending_count("skills") == 0

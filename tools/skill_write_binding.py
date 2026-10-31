@@ -31,6 +31,18 @@ def bound_skill(name: str) -> tuple[bool, Optional[dict[str, Any]]]:
     if paths is None or name not in paths:
         return False, None
     path, existed = paths[name]
+    if path is None:
+        # An earlier op may introduce a display alias. Discover it normally, but only
+        # accept a directory already covered by this batch's snapshot and gate plan.
+        from tools import skill_manager_tool as _smt
+        token = _batch_paths.set(None)
+        try:
+            discovered = _smt._find_skill(name)
+        finally:
+            _batch_paths.reset(token)
+        if discovered:
+            path = next((planned for planned, _ in paths.values() if planned is not None
+                         and _resolve(planned) == _resolve(discovered["path"])), None)
     found = path is not None and (existed or (path / _SKILL_MD).is_file())
     return True, {"path": path} if found else None
 
@@ -42,8 +54,7 @@ def batch_target_scope(ops: list[dict[str, Any]]):
     if not external_write_approval_enabled():
         yield
         return
-    paths = {target["name"]: (_resolve(target["dir"]) if target["dir"] is not None else None,
-                              target["found"]) for target in op_targets(ops)}
+    paths = {target["name"]: (target["dir"], target["found"]) for target in op_targets(ops)}
     token = _batch_paths.set(paths)
     try:
         yield
