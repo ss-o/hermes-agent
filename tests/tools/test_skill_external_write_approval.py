@@ -440,3 +440,30 @@ def test_failed_batch_restores_local_metadata_without_touching_shared_skill(env)
     assert not list(env["home"].rglob("*.rollback-broken"))
     assert not list(env["ext"].rglob("*.rollback-broken"))
     assert env["wa"].pending_count("skills") == 0
+
+
+def test_batch_refuses_newly_unambiguous_alias_outside_its_plan(env):
+    from tools.registry import registry
+    local = env["home"] / "skills" / "local-y"
+    local.mkdir()
+    original = SK.format(n="alias-x").replace("Step 1.", "Local instructions.")
+    (local / "SKILL.md").write_text(original)
+    shared = env["ext"] / "shared-x"
+    shared.mkdir()
+    (shared / "SKILL.md").write_text(SK.format(n="alias-x"))
+    shared_before = {p.relative_to(shared): p.read_bytes() for p in shared.rglob("*") if p.is_file()}
+    assert env["smt"]._find_skill("local-y")["path"] == local
+    assert env["smt"]._find_skill("shared-x")["path"] == shared
+    assert env["smt"]._find_skill("alias-x") is None
+    result = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "local-y", "action": "remove_file", "file_path": "SKILL.md"},
+        {"name": "alias-x", "action": "write_file", "file_path": "references/z.md",
+         "file_content": "Must not reach the unplanned shared target."},
+    ]}))
+    assert result.get("success") is False and result.get("failed_index") == 1, result
+    assert (local / "SKILL.md").read_text() == original
+    assert shared.is_dir() and not (shared / "references" / "z.md").exists()
+    assert {p.relative_to(shared): p.read_bytes() for p in shared.rglob("*") if p.is_file()} == shared_before
+    assert not list(env["home"].rglob("*.rollback-broken"))
+    assert not list(env["ext"].rglob("*.rollback-broken"))
+    assert env["wa"].pending_count("skills") == 0
