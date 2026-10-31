@@ -908,6 +908,16 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
+To keep learning free in your own profile and review only writes into shared skill sources, use the narrower gate instead:
+
+```yaml
+skills:
+  write_approval: false
+  external_write_approval: true   # stage only writes into skills.external_dirs or trusted project skills
+```
+
+Writes into the profile's skills directory apply at once; a `skill_manage` write whose target resolves into an external or trusted project skill root stages for the same `/skills pending` review, and approval refuses to apply it if its target moved or a replaced file changed. See [Gating writes to shared skill sources](./features/skills.md#gating-writes-to-shared-skill-sources-skillsexternal_write_approval).
+
 ## Memory Configuration
 
 ```yaml

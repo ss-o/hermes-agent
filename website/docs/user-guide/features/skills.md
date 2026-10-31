@@ -422,7 +422,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ### How it works
 
 - **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
-- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
+- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only, or [stage `skill_manage` writes to them for review](#gating-writes-to-shared-skill-sources-skillsexternal_write_approval).
 - **Precedence**: If the same skill name exists in more than one directory, the higher-precedence directory wins everywhere — skill index, `skills_list`, `hermes skills list`, `skill_view`, slash commands, `-s` preload and cron: `project → local (~/.hermes/skills/) → skills.create_dir → external_dirs`. The hidden copy is logged as shadowed. See [Duplicate skill names](#duplicate-skill-names).
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
@@ -707,6 +707,41 @@ all refuse to change it, in every kind of session; your own edits still work. Se
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are
 > independent. See [Guard on agent-created skill writes](../configuration.md#guard-on-agent-created-skill-writes).
+
+### Gating writes to shared skill sources (`skills.external_write_approval`)
+
+`external_dirs` are not a write-protection boundary: by default the agent and the
+background review edit a writable external skill in place. When those directories
+are shared or version-controlled, you can stage only the writes that land there and
+leave everything else free:
+
+```yaml
+skills:
+  write_approval: false
+  external_write_approval: true
+```
+
+- A `skill_manage` write whose target resolves into a `skills.external_dirs` entry
+  or a trusted project's skills directory is staged, from a foreground turn or the
+  background review alike. Writes into the profile's skills directory apply at once.
+  The gate covers `skill_manage` only: terminal and file tools can still write
+  external skill files.
+- Ownership is judged on the skill directory and on the file the write touches,
+  through symlinks: a profile-local skill whose `SKILL.md` links into an external
+  root stages, and so does a `skills.create_dir` that points into one. A write whose
+  ownership cannot be resolved is staged or refused, never applied. Trusted project
+  directories count only for the project the session runs in, and approval resolves
+  names from the approving session's project.
+- A batch that touches any external target stages whole, before any target changes.
+- While this setting is on, every staged write records where each target resolved
+  and where a new skill would be created, and for external files that a whole-file
+  write replaces (full rewrite, `write_file`, `remove_file`, delete) what they held.
+  `/skills approve <id>` refuses to apply it if a name now resolves elsewhere, a new
+  skill would be created somewhere else, or such a file changed; reject it and let
+  the change be staged again. A targeted `patch` still applies after unrelated
+  edits when its anchor matches.
+- `write_approval: true` still stages every write; with both settings on, those
+  writes are bound as above too.
 
 ## Skills Hub
 

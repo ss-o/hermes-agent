@@ -36,6 +36,9 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # Per-subsystem config key. Intentionally a single boolean with no "block all writes"
 # state — to disable a subsystem use its own enable flag (e.g. ``memory.memory_enabled``).
 CONFIG_KEY = "write_approval"
+# Skills only: stage writes whose target lives in an externally owned skill root
+# (skills.external_dirs, trusted project skills) even while ``write_approval`` is off.
+EXTERNAL_CONFIG_KEY = "external_write_approval"
 _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 
 
@@ -45,10 +48,24 @@ def write_approval_enabled(subsystem: str) -> bool:
     """Read ``<subsystem>.write_approval``; any unset/invalid value means gate off."""
     if subsystem not in _SUBSYSTEMS:
         return False
+    return _config_flag(subsystem, CONFIG_KEY)
+
+
+def external_write_approval_enabled() -> bool:
+    """Read ``skills.external_write_approval``; any unset/invalid value means gate off."""
+    return _config_flag(SKILLS, EXTERNAL_CONFIG_KEY)
+
+
+def skill_review_gate_enabled() -> bool:
+    """Whether either skill gate can stage writes (review surfaces stay answerable)."""
+    return write_approval_enabled(SKILLS) or external_write_approval_enabled()
+
+
+def _config_flag(section: str, key: str) -> bool:
     try:
         from hermes_cli.config import load_config, cfg_get
-        return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
-    except Exception:
+        return _normalize_enabled(cfg_get(load_config(), section, key, default=False))
+    except Exception:  # health: allow BLE001 -- contract moved unchanged from write_approval_enabled: an unreadable config reads as gate off
         return False
 
 
@@ -75,7 +92,8 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
     Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
-    the safe failure for an approval gate (nothing silently committed)."""
+    the safe failure for an approval gate (nothing silently committed); ``persisted`` is False then,
+    so the caller must not report the write as staged."""
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
@@ -86,6 +104,7 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
         atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        return {**record, "persisted": False}
     return record
 
 
@@ -187,15 +206,22 @@ def _slash_review_surface() -> bool:
     return platform not in {"webhook", "msgraph_webhook", "api_server"}
 
 
-def _staged(subsystem: str) -> GateDecision:
+def _staged(subsystem: str, key: str = CONFIG_KEY) -> GateDecision:
     command = f"/{subsystem} pending"
     if _slash_review_surface():
         where = f"review with {command}"
     else:
         where = (f"pending records live in {_pending_path(subsystem, '').parent} "
                  f"(review from an interactive CLI session with {command})")
-    return GateDecision(stage=True, message=(f"Staged for approval ({subsystem}.write_approval is on). "
+    reason = (f"{subsystem}.{key} is on" if key == CONFIG_KEY else
+              f"{subsystem}.{key} is on and the target is an externally owned skill source")
+    return GateDecision(stage=True, message=(f"Staged for approval ({reason}). "
                                              f"Not yet saved — {where}."))
+
+
+def external_skill_staged() -> GateDecision:
+    """Decision for a skill write staged by ``skills.external_write_approval``."""
+    return _staged(SKILLS, EXTERNAL_CONFIG_KEY)
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:

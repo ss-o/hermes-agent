@@ -241,19 +241,26 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     names, err = _validate_batch_ops(operations, default_name, tool_error)
     if err is not None:
         return err
-    if not _smt._skill_gate_bypass.get():
+    gated = not _smt._skill_gate_bypass.get()
+    named_ops = [{**op, "name": names[i]} for i, op in enumerate(operations)]
+    def _staging(wa):
+        acts = ", ".join(op["action"] for op in operations)
+        gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
+        return {"action": "batch", "operations": operations}, gist
+    if gated:
         # Approval gate for the WHOLE batch as one pending write.
-        def _staging(wa):
-            acts = ", ".join(op["action"] for op in operations)
-            gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+        staged = _smt._run_write_gate(_staging, named_ops)
         if staged is not None:
             return staged
     # Every target's lock is held from the snapshot through commit or rollback; the per-op
     # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
     # between the snapshot and a rollback would be silently reverted.
     with _smt._skill_mutation_locks(names):
+        if gated:
+            # External-root gate under the locks: the whole batch stages before any target changes.
+            staged = _smt._run_write_gate(_staging, named_ops, external=True)
+            if staged is not None:
+                return staged
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
         create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
                           for i, op in enumerate(operations) if op.get("action") == "create"}

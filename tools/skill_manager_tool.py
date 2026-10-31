@@ -669,27 +669,63 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
-def _run_write_gate(build_staging):
+def _external_targets(ops) -> bool:
+    """Whether ``skills.external_write_approval`` must stage ``ops``: on, and some target lives in
+    an externally owned root. Unknown ownership counts as external (fail closed)."""
+    from tools import write_approval as wa
+    if not ops or not wa.external_write_approval_enabled():
+        return False
+    try:
+        from tools.skill_write_binding import targets_external
+        return targets_external(ops)
+    except Exception:
+        logger.warning("skill ownership could not be resolved; staging the write", exc_info=True)
+        return True
+
+
+def _run_write_gate(build_staging, ops=None, *, external=False):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
-    ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
+    ``build_staging(wa) -> (payload, gist)`` runs only when staging; ``ops`` carry each target's
+    ``name``. Default: the global ``skills.write_approval`` gate, staging as before. ``external``:
+    the ``skills.external_write_approval`` gate for ``ops``, called with the targets' locks held so
+    ownership is judged on the state the write will meet. While the external gate is on, whichever
+    gate stages a write binds it to where its targets resolve (and, for external whole-file targets,
+    what they hold), so approval cannot replay it into a root the reviewer did not see. Fails open if
     write_approval cannot be imported."""
     try:
         from tools import write_approval as wa
     except Exception:
         return None  # fail open
-    decision = wa.evaluate_gate(wa.SKILLS)
-    if decision.allow:
-        return None
-    if decision.blocked:
-        return tool_error(decision.message, success=False)
+    if not external:
+        decision = wa.evaluate_gate(wa.SKILLS)
+        if decision.allow:
+            return None
+        if decision.blocked:
+            return tool_error(decision.message, success=False)
+        bind = bool(ops) and wa.external_write_approval_enabled()
+    else:
+        if not _external_targets(ops):
+            return None
+        decision, bind = wa.external_skill_staged(), True
     payload, gist = build_staging(wa)
+    if bind:
+        from tools.skill_write_binding import capture_binding
+        try:
+            payload = {**payload, "_binding": capture_binding(ops)}
+        except (OSError, ValueError) as exc:
+            return tool_error(f"Could not record the target state for this staged skill write ({exc}); "
+                              f"nothing was saved.", success=False)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    if not record.get("persisted", True):
+        return tool_error("Could not stage the skill write for approval (the pending store was not "
+                          "writable); nothing was saved.", success=False)
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
 
 
-def _apply_skill_write_gate(action, name, **payload_kwargs):
-    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay."""
+def _apply_skill_write_gate(action, name, *, external=False, **payload_kwargs):
+    """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay.
+    ``external`` selects the external-root gate (call it under the skill's lock)."""
     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
         return None
     def _staging(wa):
@@ -698,7 +734,8 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
-    return _run_write_gate(_staging)
+    op = {"action": action, "name": name, **{k: v for k, v in payload_kwargs.items() if v is not None}}
+    return _run_write_gate(_staging, [op], external=external)
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
@@ -714,12 +751,20 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
 
 
 def apply_skill_pending(payload: dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
-    token = _skill_gate_bypass.set(True)
-    try:
-        return _skill_manage_from(payload)
-    finally:
-        _skill_gate_bypass.reset(token)
+    """Replay a staged skill write, bypassing the gate (the /skills approve handler). A write staged
+    with a target binding replays only while its targets resolve and read as they did at staging;
+    the check and the replay hold the bound skills' locks."""
+    from tools.skill_write_binding import binding_names, check_binding
+    binding = payload.get("_binding")
+    with _skill_mutation_locks(binding_names(binding)):
+        if (stale := check_binding(binding)) is not None:
+            return tool_error(f"Not applied: {stale}. Reject this staged write and let it be staged "
+                              f"again against the current skill.", success=False)
+        token = _skill_gate_bypass.set(True)
+        try:
+            return _skill_manage_from(payload)
+        finally:
+            _skill_gate_bypass.reset(token)
 
 
 def _act_patch(a):
@@ -809,6 +854,13 @@ def skill_manage(
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
     with _skill_mutation_lock(name):
+        # A create's category picks its destination, which the external gate must resolve.
+        if action == "create" and (cat_err := _validate_category(category)) is not None:
+            return json.dumps(_err(cat_err), ensure_ascii=False)
+        # External-root gate under the lock, so a concurrent writer cannot move the target between
+        # the ownership judgment and the write.
+        if (gate_result := _apply_skill_write_gate(action, name, external=True, **args)) is not None:
+            return gate_result
         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
         # destroys the whole package (consolidation may have re-homed support files first), so
         # complete it from the newest curator backup or a restore is hollow.

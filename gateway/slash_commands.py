@@ -929,7 +929,7 @@ class GatewaySlashCommandsMixin(
         from tools import write_approval as wa
         args = event.get_command_args().strip().split()
         sub = args[0].lower() if args else ""
-        gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
+        gate_off = not wa.skill_review_gate_enabled() and sub not in {"approval", "mode"}
         if gate_off and wa.pending_count(wa.SKILLS) == 0:
             return t("gateway.skills.gate_off")
         out = handle_pending_subcommand(
