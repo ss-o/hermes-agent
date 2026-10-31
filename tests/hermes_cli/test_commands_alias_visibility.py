@@ -1,5 +1,10 @@
 """Aliases resolve everywhere but no listing or suggestion surface shows them."""
 
+import contextlib
+import io
+import re
+
+import pytest
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
@@ -41,6 +46,30 @@ def test_help_listing_has_every_command_and_no_alias():
     assert listed == {f"/{cmd.name}" for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
     assert "/queue" in listed
     assert "/q" not in listed
+
+
+@pytest.mark.parametrize("query", ["", "queue"])
+def test_rendered_cli_help_has_no_alias_rows(monkeypatch, query):
+    import cli
+    from hermes_cli.cli_info_mixin import CLIInfoMixin
+    from rich.console import Console
+
+    class HelpCLI(CLIInfoMixin):
+        config = {}
+
+        def _command_available(self, slash_command):
+            return True
+
+    output = io.StringIO()
+    console = Console(file=output, width=240, force_terminal=False, color_system=None)
+    monkeypatch.setattr(cli, "ChatConsole", lambda: console)
+    monkeypatch.setattr(cli, "_session_skill_commands", lambda _: {})
+    monkeypatch.setattr(cli, "get_skill_bundles", dict)
+    with contextlib.redirect_stdout(output):
+        HelpCLI().show_help(query)
+    rows = set(re.findall(r"^\s+(/[\w-]+)\s+-", output.getvalue(), re.MULTILINE))
+    assert "/queue" in rows
+    assert not rows.intersection(_aliases())
 
 
 def test_gateway_help_does_not_name_aliases():

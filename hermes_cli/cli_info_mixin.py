@@ -345,7 +345,7 @@ class CLIInfoMixin:
                 _row(cmd, desc)
 
         # Rows come straight from the registry so descriptions resolve through the localized
-        # ``CommandDef.describe()`` accessor (names/aliases stay identifiers).
+        # ``CommandDef.describe()`` accessor; aliases resolve but never appear as rows.
         by_category: dict[str, list[tuple[str, str]]] = {}
         for cmd_def in COMMAND_REGISTRY:
             if cmd_def.gateway_only:
@@ -354,8 +354,6 @@ class CLIInfoMixin:
             rows = by_category.setdefault(cmd_def.category, [])
             rows.append((f"/{cmd_def.name}", t("cli.help.usage_suffix", description=desc, command=cmd_def.name,
                                               args=cmd_def.args_hint) if cmd_def.args_hint else desc))
-            for alias in cmd_def.aliases:
-                rows.append((f"/{alias}", t("cli.help.alias_suffix", description=desc, command=cmd_def.name)))
 
         for category, commands in by_category.items():
             if category != "Session":
