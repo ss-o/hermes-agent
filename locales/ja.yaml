@@ -1500,7 +1500,6 @@ slash:
   shared:
     usage_suffix: "{description}（使い方: /{name} {args_hint}）"
     alias_for: "{description}（/{name} のエイリアス）"
-    alias_note: " (エイリアス: {aliases})"
     slack_alias_for: "/{name} のエイリアス — {description}"
     plugin_default_desc: "/{name} を実行"
     plugin_command_desc: "プラグインコマンド"

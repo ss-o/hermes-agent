@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from hermes_cli.commands import ALIAS_ONLY_COMMANDS, COMMANDS, SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -448,7 +448,7 @@ class SlashCommandCompleter(Completer):
             return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
 
         for cmd, desc in COMMANDS.items():
-            if self._command_allowed(cmd) and cmd[1:].startswith(word):
+            if cmd not in ALIAS_ONLY_COMMANDS and self._command_allowed(cmd) and cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], desc)
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():
             if cmd[1:].startswith(word):
@@ -502,7 +502,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
             word = text[1:].lower()
             for cmd in sorted(COMMANDS, key=len):
                 cmd_name = cmd[1:]
-                if self._allowed(cmd) and cmd_name.startswith(word) and cmd_name != word:
+                if cmd not in ALIAS_ONLY_COMMANDS and self._allowed(cmd) and cmd_name.startswith(word) and cmd_name != word:
                     return Suggestion(cmd_name[len(word):])
             return None
 

@@ -1752,7 +1752,6 @@ slash:
   shared:
     usage_suffix: "{description} (usage : /{name} {args_hint})"
     alias_for: "{description} (alias de /{name})"
-    alias_note: " (alias : {aliases})"
     slack_alias_for: "Alias de /{name} — {description}"
     plugin_default_desc: "Exécuter /{name}"
     plugin_command_desc: "Commande de plugin"

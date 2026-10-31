@@ -1517,7 +1517,6 @@ slash:
   shared:
     usage_suffix: "{description} (használat: /{name} {args_hint})"
     alias_for: "{description} (a /{name} álneve)"
-    alias_note: " (álnév: {aliases})"
     slack_alias_for: "A /{name} álneve — {description}"
     plugin_default_desc: "/{name} futtatása"
     plugin_command_desc: "Plugin-parancs"

@@ -1500,7 +1500,6 @@ slash:
   shared:
     usage_suffix: "{description} (використання: /{name} {args_hint})"
     alias_for: "{description} (псевдонім для /{name})"
-    alias_note: " (псевдонім: {aliases})"
     slack_alias_for: "Псевдонім для /{name} — {description}"
     plugin_default_desc: "Виконати /{name}"
     plugin_command_desc: "Команда плагіна"

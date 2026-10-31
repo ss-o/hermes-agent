@@ -1500,7 +1500,6 @@ slash:
   shared:
     usage_suffix: "{description} (úsáid: /{name} {args_hint})"
     alias_for: "{description} (ailias do /{name})"
-    alias_note: " (ailias: {aliases})"
     slack_alias_for: "Ailias do /{name} — {description}"
     plugin_default_desc: "Rith /{name}"
     plugin_command_desc: "Ordú breiseáin"

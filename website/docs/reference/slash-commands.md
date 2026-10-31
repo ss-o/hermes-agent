@@ -32,6 +32,8 @@ If `allow_admin_from` is unset for a scope, that scope stays in unrestricted bac
 
 Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-insensitive.
 
+Help, command palettes, and autocomplete show canonical built-in command names only. Registered aliases still execute, but are not listed or suggested.
+
 ### Session
 
 | Command | Description |

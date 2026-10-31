@@ -1500,7 +1500,6 @@ slash:
   shared:
     usage_suffix: "{description} (الاستخدام: /{name} {args_hint})"
     alias_for: "{description} (اسم بديل لـ /{name})"
-    alias_note: " (الأسماء البديلة: {aliases})"
     slack_alias_for: "اسم بديل لـ /{name} — {description}"
     plugin_default_desc: "تشغيل /{name}"
     plugin_command_desc: "أمر إضافة"

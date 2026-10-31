@@ -1500,7 +1500,6 @@ slash:
   shared:
     usage_suffix: "{description}（用法：/{name} {args_hint}）"
     alias_for: "{description}（/{name} 的別名）"
-    alias_note: "（別名：{aliases}）"
     slack_alias_for: "/{name} 的別名 — {description}"
     plugin_default_desc: "執行 /{name}"
     plugin_command_desc: "外掛指令"

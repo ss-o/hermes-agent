@@ -409,28 +409,41 @@ def _build_description(cmd: CommandDef) -> str:
 
 
 def build_commands_by_category() -> dict[str, dict[str, str]]:
-    """Localized ``{category: {"/command": description}}`` (excludes gateway_only).
+    """Localized ``{category: {"/command": description}}`` of canonical commands (excludes gateway_only).
 
-    Built per call so a ``display.language`` change applies without a restart; category keys are
-    the registry identifiers -- render them with ``category_label``.
+    This is the listing behind ``/help`` and the command palettes, so it omits aliases: they
+    resolve everywhere (``COMMANDS``, ``resolve_command``) but a listed alias teaches the short form
+    instead of the real name. Built per call so a ``display.language`` change applies without a
+    restart; category keys are the registry identifiers -- render them with ``category_label``.
     """
     grouped: dict[str, dict[str, str]] = {}
     for cmd in COMMAND_REGISTRY:
-        if cmd.gateway_only:
-            continue
-        entries = {f"/{cmd.name}": _build_description(cmd)}
-        for alias in cmd.aliases:
-            entries[f"/{alias}"] = t("slash.shared.alias_for", description=cmd.describe(), name=cmd.name)
-        grouped.setdefault(cmd.category, {}).update(entries)
+        if not cmd.gateway_only:
+            grouped.setdefault(cmd.category, {})[f"/{cmd.name}"] = _build_description(cmd)
     return grouped
 
 
 def build_commands() -> dict[str, str]:
-    """Localized flat ``{"/command": description}`` (excludes gateway_only)."""
+    """Localized flat ``{"/command": description}`` of every name AND alias (excludes gateway_only).
+
+    The lookup table for prefix expansion, unknown-command checks and name-collision guards. Never
+    list it: ``COMMANDS_BY_CATEGORY`` is the listing, and completion skips ``ALIAS_ONLY_COMMANDS``.
+    """
     flat: dict[str, str] = {}
-    for entries in build_commands_by_category().values():
-        flat.update(entries)
+    for cmd in COMMAND_REGISTRY:
+        if cmd.gateway_only:
+            continue
+        flat[f"/{cmd.name}"] = _build_description(cmd)
+        for alias in cmd.aliases:
+            flat[f"/{alias}"] = t("slash.shared.alias_for", description=cmd.describe(), name=cmd.name)
     return flat
+
+
+# Slash names (with the leading slash) that exist only as an alias of a command the CLI lists, for
+# surfaces that suggest commands while the user types: they hide these, the same as ``/help``.
+ALIAS_ONLY_COMMANDS: frozenset[str] = frozenset(
+    f"/{alias}" for cmd in COMMAND_REGISTRY if not cmd.gateway_only for alias in cmd.aliases
+) - frozenset(f"/{cmd.name}" for cmd in COMMAND_REGISTRY)
 
 
 # ``COMMANDS`` / ``COMMANDS_BY_CATEGORY`` resolve lazily through the module ``__getattr__`` below so
@@ -542,11 +555,7 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
         if allowed_set is not None and cmd.name not in allowed_set:
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
-        # Skip internal aliases like reload_mcp (underscore variant of the name).
-        alias_parts = [f"`/{a}`" for a in cmd.aliases
-                       if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
-        alias_note = t("slash.shared.alias_note", aliases=", ".join(alias_parts)) if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.describe()}{alias_note}")
+        lines.append(f"`/{cmd.name}{args}` -- {cmd.describe()}")
     return lines
 
 
