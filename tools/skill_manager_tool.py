@@ -265,6 +265,10 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
     skill's directory. A display name held by two or more distinct skills resolves to
     nothing: like skill_view's same-tier collision refusal, refusing to guess beats
     silently mutating the wrong skill; the directory name still resolves."""
+    from tools.skill_write_binding import bound_skill
+    bound, target = bound_skill(name)
+    if bound:
+        return target
     from agent.skill_utils import get_all_skills_dirs
     local_root = None
     if "/" in name or "\\" in name:
@@ -837,6 +841,9 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
+    # Both approval gates resolve a create's destination before staging it.
+    if action == "create" and (cat_err := _validate_category(category)) is not None:
+        return json.dumps(_err(cat_err), ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
@@ -854,9 +861,6 @@ def skill_manage(
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
     with _skill_mutation_lock(name):
-        # A create's category picks its destination, which the external gate must resolve.
-        if action == "create" and (cat_err := _validate_category(category)) is not None:
-            return json.dumps(_err(cat_err), ensure_ascii=False)
         # External-root gate under the lock, so a concurrent writer cannot move the target between
         # the ownership judgment and the write.
         if (gate_result := _apply_skill_write_gate(action, name, external=True, **args)) is not None:

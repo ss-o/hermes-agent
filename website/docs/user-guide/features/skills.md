@@ -733,6 +733,8 @@ skills:
   directories count only for the project the session runs in, and approval resolves
   names from the approving session's project.
 - A batch that touches any external target stages whole, before any target changes.
+  While this setting is on, each name keeps its initial target throughout a batch,
+  so changing a skill's metadata cannot redirect a later operation to another root.
 - While this setting is on, every staged write records where each target resolved
   and where a new skill would be created, and for external files that a whole-file
   write replaces (full rewrite, `write_file`, `remove_file`, delete) what they held.
@@ -742,6 +744,7 @@ skills:
   edits when its anchor matches.
 - `write_approval: true` still stages every write; with both settings on, those
   writes are bound as above too.
+  Invalid create categories are rejected before either gate resolves a destination.
 
 ## Skills Hub
 

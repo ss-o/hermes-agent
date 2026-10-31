@@ -2,7 +2,7 @@
 (``skill_manage``/``_find_skill``/``_skill_gate_bypass``) is reached lazily
 through ``tools.skill_manager_tool`` so that module owns it."""
 
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 import json
 import logging
 import posixpath
@@ -225,6 +225,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     top-level ``name`` fallback (staged replay)."""
     from tools import skill_manager_tool as _smt
     from tools.registry import tool_error
+    from tools.skill_write_binding import batch_target_scope
     if not isinstance(operations, list) or not operations:
         return tool_error("operations must be a non-empty array.", success=False)
     if len(operations) > _BATCH_MAX_OPS:
@@ -255,12 +256,13 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     # Every target's lock is held from the snapshot through commit or rollback; the per-op
     # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
     # between the snapshot and a rollback would be silently reverted.
-    with _smt._skill_mutation_locks(names):
+    with _smt._skill_mutation_locks(names), ExitStack() as target_scope:
         if gated:
             # External-root gate under the locks: the whole batch stages before any target changes.
             staged = _smt._run_write_gate(_staging, named_ops, external=True)
             if staged is not None:
                 return staged
+        target_scope.enter_context(batch_target_scope(named_ops))
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
         create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
                           for i, op in enumerate(operations) if op.get("action") == "create"}

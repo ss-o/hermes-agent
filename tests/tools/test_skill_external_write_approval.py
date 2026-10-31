@@ -273,6 +273,10 @@ def test_binding_lists_every_op_name_for_replay_locks(env):
     ])
     record = env["wa"].get_pending("skills", r["pending_id"])
     assert set(binding_names(record["payload"]["_binding"])) == {"aliased", "display-alias"}
+    result = json.loads(env["smt"].apply_skill_pending(record["payload"]))
+    assert result.get("success") is True, result
+    assert "Step A." in (alias / "SKILL.md").read_text()
+    assert "# Alias" in (alias / "SKILL.md").read_text()
 
 
 def test_both_gates_bind_local_writes_so_a_vanished_shadow_cannot_redirect_them(env):
@@ -307,3 +311,69 @@ def test_failed_memory_staging_is_not_reported_as_staged(env):
         r = json.loads(memory_tool(action="add", target="memory", content="fact", store=load_on_disk_store()))
     assert r.get("success") is False and not r.get("staged"), r
     assert env["wa"].pending_count("memory") == 0
+
+
+def test_batch_keeps_local_target_when_skill_metadata_is_removed(env):
+    from tools.registry import registry
+    local = env["home"] / "skills" / "shared-skill"
+    local.mkdir()
+    original = SK.format(n="shared-skill").replace("Step 1.", "Local instructions.")
+    (local / "SKILL.md").write_text(original)
+    shared_before = _shared_md(env)
+    result = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "shared-skill", "action": "remove_file", "file_path": "SKILL.md"},
+        {"name": "shared-skill", "action": "write_file", "file_path": "references/local.md",
+         "file_content": "Local supporting content."},
+    ]}))
+    assert result.get("success") is True, result
+    assert _shared_md(env) == shared_before
+    assert not (env["ext"] / "shared-skill" / "references" / "local.md").exists()
+    assert not (local / "SKILL.md").exists()
+    assert (local / "references" / "local.md").read_text() == "Local supporting content."
+    assert env["wa"].pending_count("skills") == 0
+    following = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "shared-skill", "action": "write_file", "file_path": "references/next.md",
+         "file_content": "This is now a shared target."},
+    ]}))
+    assert following.get("staged") is True, following
+    assert not (env["ext"] / "shared-skill" / "references" / "next.md").exists()
+
+
+def test_replay_refuses_when_a_secondary_alias_resolves_to_a_new_skill(env):
+    from tools.registry import registry
+    original = env["ext"] / "aliased"
+    (original / "references").mkdir(parents=True)
+    (original / "SKILL.md").write_text(SK.format(n="display-alias"))
+    (original / "references" / "a.md").write_text("Reviewed content.")
+    staged = json.loads(registry.dispatch("skill_manage", {"operations": [
+        {"name": "aliased", "action": "write_file", "file_path": "references/a.md",
+         "file_content": "First operation."},
+        {"name": "display-alias", "action": "write_file", "file_path": "references/a.md",
+         "file_content": "Second operation."},
+    ]}))
+    assert staged.get("staged") is True, staged
+    assert (original / "references" / "a.md").read_text() == "Reviewed content."
+    competing = env["ext"] / "display-alias"
+    (competing / "references").mkdir(parents=True)
+    (competing / "SKILL.md").write_text(SK.format(n="display-alias"))
+    (competing / "references" / "a.md").write_text("New owner content.")
+    record = env["wa"].get_pending("skills", staged["pending_id"])
+    result = json.loads(env["smt"].apply_skill_pending(record["payload"]))
+    assert result.get("success") is False, result
+    assert "now resolves" in result.get("error", ""), result
+    assert (original / "references" / "a.md").read_text() == "Reviewed content."
+    assert (competing / "references" / "a.md").read_text() == "New owner content."
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_global_gate_rejects_bad_create_category_before_staging(env, external):
+    from tools.registry import registry
+    env["configure"](write_approval=True, external=external)
+    result = json.loads(registry.dispatch("skill_manage", {
+        "action": "create", "name": "new-skill", "category": 5,
+        "content": SK.format(n="new-skill"),
+    }))
+    assert result.get("success") is False, result
+    assert result.get("error") == "Category must be a string.", result
+    assert env["wa"].pending_count("skills") == 0
+    assert not (env["home"] / "skills" / "new-skill").exists()

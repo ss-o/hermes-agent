@@ -12,6 +12,8 @@ state (``_find_skill``, ``_resolve_skill_dir``, ``_validate_file_path``) is reac
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import os
 from pathlib import Path
@@ -19,6 +21,34 @@ from typing import Any, Optional
 
 _SKILL_MD = "SKILL.md"
 _WHOLE_FILE_ACTIONS = {"create", "edit", "write_file", "remove_file", "delete"}
+_batch_paths: ContextVar[Optional[dict[str, tuple[Optional[Path], bool]]]] = ContextVar(
+    "skill_batch_paths", default=None)
+
+
+def bound_skill(name: str) -> tuple[bool, Optional[dict[str, Any]]]:
+    """Keep a batch name on its planned target even if an earlier op removes its SKILL.md."""
+    paths = _batch_paths.get()
+    if paths is None or name not in paths:
+        return False, None
+    path, existed = paths[name]
+    found = path is not None and (existed or (path / _SKILL_MD).is_file())
+    return True, {"path": path} if found else None
+
+
+@contextmanager
+def batch_target_scope(ops: list[dict[str, Any]]):
+    """With the external gate enabled, execute every name against its initial target plan."""
+    from tools.write_approval import external_write_approval_enabled
+    if not external_write_approval_enabled():
+        yield
+        return
+    paths = {target["name"]: (_resolve(target["dir"]) if target["dir"] is not None else None,
+                              target["found"]) for target in op_targets(ops)}
+    token = _batch_paths.set(paths)
+    try:
+        yield
+    finally:
+        _batch_paths.reset(token)
 
 
 def _resolve(path: Path) -> Path:
@@ -125,7 +155,7 @@ def capture_binding(ops: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if not target["found"] or target["file"] == "":
             continue  # inside a skill this batch creates (covered by its create entry), or an invalid path
-        key = ("existing", str(skill_dir), target["file"])
+        key = ("existing", name, str(skill_dir), target["file"])
         entry = entries.setdefault(key, {
             "name": name, "kind": "existing", "dir": str(skill_dir), "file": target["file"],
             "file_real": str(_resolve(skill_dir / target["file"])) if target["file"] else None})
