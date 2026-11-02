@@ -2,7 +2,7 @@
 """Tests for execute_code's session kernel.
 
 Session kernels are always on (the ``code_execution.kernel_mode`` key is
-retired): each (task, mode, interpreter, cwd, tool-set) owner keeps one
+retired): each (owner, mode, interpreter, tool-set) keeps one
 Python child alive so state survives across calls. These tests pin the
 contract:
 
@@ -182,6 +182,121 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("raw-passthrough", result["output"])
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("cell_error", [False, True])
+def test_failed_cwd_restore_reports_state_loss_and_ends_kernel(tmp_path, cell_error):
+    # POSIX permits moving the staging directory while the runner is using it.
+    project = tmp_path / "project"
+    project.mkdir()
+    with _kernel_config(), patch("tools.code_execution_tool._resolve_child_cwd", return_value=str(project)):
+        first = _run("x = 41")
+        assert first["status"] == "success", first
+        (kernel,) = _KERNELS.values()
+        proc = kernel.proc
+        code = (f"import os\nos.rename({kernel.tmpdir!r}, {str(tmp_path / 'moved')!r})\n"
+                "print('cell ran')")
+        if cell_error:
+            code += "\nraise ValueError('original cell failure')"
+        result = _run(code)
+        assert result["status"] == "error", result
+        assert "restore" in result.get("error", ""), result
+        assert "state was lost" in result["error"]
+        assert "cell ran" in result["output"]
+        if cell_error:
+            assert "ValueError: original cell failure" in result["error"]
+        assert result["kernel"].get("ended") is True
+        assert result["kernel"].get("state_lost") is True
+        assert len(_KERNELS) == 0
+        assert proc.poll() is not None
+        fresh = _run("print('fresh', globals().get('x'))")
+    assert fresh["status"] == "success", fresh
+    assert fresh["output"].strip() == "fresh None"
+    assert fresh["kernel"]["reused"] is False
+
+
+def test_relative_pythonpath_is_anchored_at_kernel_start(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    library = project / "src"
+    library.mkdir(parents=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    (library / "relative_probe.py").write_text("VALUE = 41\n", encoding="utf-8")
+    (project / "root_probe.py").write_text("VALUE = 'original project'\n", encoding="utf-8")
+    startup_cwd = tmp_path / "startup-cwd"
+    (library / "sitecustomize.py").write_text(
+        f"import os\nwith open({str(startup_cwd)!r}, 'w') as f:\n    f.write(os.getcwd())\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(("src", ".", "")))
+    with _kernel_config(mode="project"), patch("tools.code_execution_tool._resolve_child_python", return_value=sys.executable):
+        with patch("tools.code_execution_tool._resolve_child_cwd", return_value=str(project)):
+            first = _run("import relative_probe\nx = relative_probe.VALUE\nprint(x)")
+        assert first["status"] == "success", first
+        assert first["output"].strip() == "41"
+        assert startup_cwd.read_text() == os.path.realpath(project)
+        with patch("tools.code_execution_tool._resolve_child_cwd", return_value=str(other)):
+            second = _run("import os, root_probe\nprint(x + 1, root_probe.VALUE, os.getcwd())")
+        assert second["status"] == "success", second
+        assert second["output"].strip() == f"42 original project {os.path.realpath(other)}"
+        assert second["kernel"]["reused"] is True
+
+
+@pytest.mark.platforms("posix")
+def test_missing_idle_staging_directory_reports_state_loss(tmp_path):
+    import shutil
+
+    marker = tmp_path / "must-not-run"
+    with _kernel_config(), patch("tools.code_execution_tool._resolve_child_cwd", return_value=str(tmp_path)):
+        assert _run("x = 41")["status"] == "success"
+        (kernel,) = _KERNELS.values()
+        proc = kernel.proc
+        shutil.rmtree(kernel.tmpdir)
+        result = _run(f"from pathlib import Path\nPath({str(marker)!r}).touch()")
+        assert result["status"] == "error", result
+        assert result["kernel"].get("state_lost") is True, result
+        assert result["kernel"].get("ended") is True
+        assert "state was lost" in result["error"]
+        assert not marker.exists()
+        assert not _KERNELS
+        assert proc.poll() is not None
+        fresh = _run("print(globals().get('x'))")
+        assert fresh["status"] == "success", fresh
+        assert fresh["output"].strip() == "None"
+        assert fresh["kernel"]["reused"] is False
+
+
+@pytest.mark.platforms("posix")
+def test_absolute_project_alias_is_preserved_at_spawn(tmp_path, monkeypatch):
+    from tools import code_kernel
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "value.txt").write_text("project content", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    monkeypatch.setenv("TERMINAL_CWD", str(alias))
+    with _kernel_config(mode="project"), patch("tools.code_execution_tool._resolve_child_python", return_value=sys.executable):
+        with patch("tools.code_kernel._spawn", wraps=code_kernel._spawn) as spawn:
+            result = _run("from pathlib import Path\nprint(Path('value.txt').read_text())")
+    assert result["status"] == "success", result
+    assert result["output"].strip() == "project content"
+    assert spawn.call_args.kwargs["child_cwd"] == str(alias)
+
+
+def test_relative_project_cwd_is_resolved_on_the_host(tmp_path, monkeypatch):
+    for name in ("project", "other"):
+        (tmp_path / name).mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TERMINAL_CWD", "project")
+    with _kernel_config(mode="project"), patch("tools.code_execution_tool._resolve_child_python", return_value=sys.executable):
+        first = json.loads(execute_code("import os\nx = 41\nprint(os.getcwd())", task_id="relative-cwd-probe"))
+        assert first["status"] == "success", first
+        assert first["output"].strip() == os.path.realpath(tmp_path / "project")
+        monkeypatch.setenv("TERMINAL_CWD", "other")
+        second = json.loads(execute_code("print(x + 1, os.getcwd())", task_id="relative-cwd-probe"))
+        assert second["status"] == "success", second
+        assert second["output"].strip() == f"42 {os.path.realpath(tmp_path / 'other')}"
+        assert second["kernel"]["reused"] is True
+
+
 class TestModelFacingReset(unittest.TestCase):
     def test_reset_is_reachable_from_a_model_call_despite_stale_kernel_mode(self):
         """Session kernels are always on (#96787), so ``reset`` is the model's only
@@ -235,6 +350,49 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertEqual(second["status"], "success", second)
         self.assertIn("42", second["output"])
         self.assertEqual(second["kernel"]["reused"], True)
+
+    def test_a_cwd_change_keeps_the_one_session_kernel(self):
+        # A terminal `cd` between cells moves the cell, not the session. Keying the kernel by cwd
+        # swapped in a fresh one (reused: false, state_reset: false, state gone) and left the old
+        # one running with its cwd inside the previous directory.
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, _kernel_config():
+            a, b = os.path.realpath(a), os.path.realpath(b)
+            with patch("tools.code_execution_tool._resolve_child_cwd", return_value=a):
+                first = self._run_as("conv-cd", "import os\nx = 41\nprint(os.getcwd())", task_id="t1")
+            with patch("tools.code_execution_tool._resolve_child_cwd", return_value=b):
+                second = self._run_as("conv-cd", "print(x + 1, os.getcwd())", task_id="t2")
+            self.assertEqual(len(_KERNELS), 1)
+            (kernel,) = _KERNELS.values()
+            idle_cwd = os.path.realpath(f"/proc/{kernel.proc.pid}/cwd") if os.path.isdir("/proc") else None
+        self.assertEqual(first["output"].strip(), a)
+        self.assertEqual(second["status"], "success", second)
+        self.assertEqual(second["output"].strip(), f"42 {b}")
+        self.assertEqual(second["kernel"]["reused"], True)
+        if idle_cwd is not None:  # between cells the kernel holds neither directory
+            self.assertNotIn(idle_cwd, (a, b))
+
+
+    def test_missing_cell_cwd_refuses_execution_and_keeps_state_for_retry(self):
+        with tempfile.TemporaryDirectory() as root, _kernel_config():
+            cwd = Path(root) / "project"
+            cwd.mkdir()
+            marker = Path(root) / "must-not-exist"
+            with patch("tools.code_execution_tool._resolve_child_cwd", return_value=str(cwd)):
+                first = self._run_as("conv-cd", "x = 41", task_id="t1")
+                self.assertEqual(first["status"], "success", first)
+                # The directory disappears after host resolution, before the child enters it.
+                cwd.rmdir()
+                refused = self._run_as(
+                    "conv-cd", f"from pathlib import Path\nPath({str(marker)!r}).touch()", task_id="t2")
+                self.assertEqual(refused["status"], "error", refused)
+                self.assertIn("FileNotFoundError", refused.get("error", ""))
+                self.assertFalse(marker.exists())
+                cwd.mkdir()
+                retry = self._run_as("conv-cd", "import os\nprint(x + 1, os.getcwd())", task_id="t3")
+        self.assertEqual(retry["status"], "success", retry)
+        self.assertEqual(retry["output"].strip(), f"42 {os.path.realpath(cwd)}")
+        self.assertTrue(retry["kernel"]["reused"])
+
 
     def test_sessions_are_isolated_from_each_other(self):
         # Same task id, different sessions: no state may cross.

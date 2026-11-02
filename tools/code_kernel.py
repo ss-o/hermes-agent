@@ -1,5 +1,5 @@
 """Session-persistent Python kernels for execute_code: one child per (owner, mode,
-interpreter, cwd, tool-set), one code cell per call, state survives across calls.
+interpreter, tool-set), one code cell per call, state survives across calls.
 
 Constraints, in order: (1) SAME security envelope as per-call (``_build_child_env``
 scrubbing, ``_rpc_server_loop`` token + per-cell tool budget, ANSI strip + secret
@@ -8,11 +8,13 @@ timeout/interrupt kills the process tree and drops the registry entry; state los
 deliberate (a cell cannot be interrupted in place safely). (3) Env frozen at spawn:
 later passthrough is invisible until ``reset=true`` (the result names the kernel).
 
-Wire protocol: one JSON request per stdin line ``{"id", "code"}``; replies framed on
+Wire protocol: one JSON request per stdin line ``{"id", "code", "cwd"}``; replies framed on
 stdout as ``<SENTINEL> <byte-length>\\n<json>`` with a per-kernel random SENTINEL from
 the env. Bytes outside frames are raw fd output attributed to the running cell (calls
 are serialized per kernel). A forged frame can only fake its own cell result.
 Also hosts what ``tools.code_kernel_remote`` shares: owner resolution, registry, cell core.
+An explicit per-cell cwd is entered before executing code and restored afterwards;
+failed restoration ends the local kernel and reports state loss. Remote requests omit cwd.
 """
 
 from __future__ import annotations
@@ -56,13 +58,32 @@ def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    # An explicit cwd applies to this cell only; restore staging afterwards. Without an
+    # override (remote/strict mode), preserve the cell's own directory changes.
+    cwd = request.get("cwd") or ""
+    home = None
     try:
+        if cwd:
+            home = os.getcwd()
+            os.chdir(cwd)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:
         status, trace = "error", traceback.format_exc()
+        if cwd and home is None:
+            status = "cwd-error"
+            trace += ("\\nFailed to read the session kernel cwd; the kernel ended "
+                      "and its state was lost.\\n")
+    finally:
+        if home is not None:
+            try:
+                os.chdir(home)
+            except OSError:
+                status = "cwd-error"
+                trace += ("\\nFailed to restore the session kernel cwd; the kernel ended "
+                          "and its state was lost.\\n" + traceback.format_exc())
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
@@ -142,6 +163,10 @@ def _start_parent_process_watchdog():
 
 _start_parent_process_watchdog()
 
+# Startup imports and hooks need the project cwd; idle kernels must release it.
+if _SPILL_DIR:
+    os.chdir(_SPILL_DIR)
+
 _real_stdout = sys.stdout
 
 {RUNNER_CELL_SOURCE}
@@ -185,7 +210,7 @@ def main():
             if payload["stdout_clipped"] else ""
         )
         _reply(payload)
-        if payload["status"] == "exit":
+        if payload["status"] in ("exit", "cwd-error"):
             break
 
 
@@ -782,7 +807,10 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
         from tools.code_execution_tool import _format_interrupted_output
         result.update(exit_code=-1, output=_format_interrupted_output(stdout_text),
                       error="Interrupted; the session kernel was killed and its state was lost.")
-    elif cell_status == "error":
+    elif cell_status in ("error", "cwd-error"):
+        if cell_status == "cwd-error":
+            _REGISTRY.discard(key, kernel)
+            result["kernel"].update(ended=True, state_lost=True)
         trace = clean(str(payload.get("traceback", "")))
         result.update(status="error", exit_code=1, error=trace or "Cell raised an exception.",
                       output=_with_stderr(stdout_text, cell_stderr + trace) if (cell_stderr or trace) else stdout_text)
@@ -808,9 +836,9 @@ def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
 ) -> str:
-    """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
+    """Run one cell in the (owner, mode, python, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    key = (_resolve_owner(task_id) or "", mode, child_python, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
@@ -838,6 +866,8 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
     authority = CellAuthority(task_id)
     with kernel.lock:
         try:
+            if child_cwd:
+                child_cwd = str(Path(child_cwd).absolute())
             if kernel.proc is None:
                 _spawn(kernel, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                        sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls)
@@ -847,7 +877,8 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             kernel.cell_log_start = len(kernel.tool_call_log)
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
-            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
+            request = {"id": uuid.uuid4().hex, "code": code, "cwd": child_cwd}
+            kernel.proc.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
             result = _cell_result(

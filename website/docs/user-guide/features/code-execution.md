@@ -158,11 +158,19 @@ Switching mode changes where scripts run and which interpreter runs them, not wh
 ## Persistent session kernel
 
 Calls reuse a Python child for the same session, execution mode, interpreter,
-working directory, and tool set. Imports, variables, and loaded data can persist
+and tool set. Imports, variables, and loaded data can persist
 between cells. The child environment is fixed when the kernel starts.
+Relative `PYTHONPATH` entries resolve against the first cell's cwd at kernel startup and stay fixed until reset.
+
+Changing the local working directory between cells preserves that state. A supplied
+directory applies only to its cell; if it is unavailable, the cell fails before
+running code and keeps the existing kernel state. Without a directory override
+(strict mode and remote backends), directory changes made by the cell persist.
 
 Pass `reset: true` to discard that kernel state. A timeout or interrupted kernel
-can also lose it. Do not assume that a later terminal environment change is
+can also lose it. With a directory override, a missing idle directory or failed restoration
+reports the failure and state loss, ends that kernel, and the next call starts a
+fresh one. Do not assume that a later terminal environment change is
 already visible inside an existing kernel. The old `code_execution.kernel_mode`
 setting is no longer a separate switch.
 

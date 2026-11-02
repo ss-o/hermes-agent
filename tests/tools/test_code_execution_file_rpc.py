@@ -51,6 +51,8 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
 
     def dispatch(name, args, **kwargs):
         seen.append((name, args.copy()))
+        if name == "terminal" and args.get("command") == "dispatch-error":
+            raise RuntimeError("terminal unavailable")
         return json.dumps({"name": name, "args": args})
 
     monkeypatch.setattr("model_tools.handle_function_call", dispatch)
@@ -63,7 +65,7 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
             return {"output": result.stdout}
 
     stop = threading.Event()
-    budget = len(CALLS) + 8
+    budget = len(CALLS) + 9
     poller = threading.Thread(target=_rpc_poll_loop, args=(Shell(), str(rpc), "owner", log, counter,
                                budget, frozenset(CALLS), stop, "right-token"), daemon=True)
     poller.start()
@@ -87,11 +89,17 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
             assert schema_keys <= set(args), (name, schema_keys - set(args))
             assert namespace[name](**args) == {"name": name, "args": args}
         assert seen == list(CALLS.items())
+        failed = namespace["terminal"]("dispatch-error")
+        assert failed["error"] == failed["output"] == "terminal unavailable"
+        assert failed["exit_code"] == -1
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda i: namespace["terminal"](f"tag-{i}", 3, "/tmp"), range(8)))
         assert [r["args"]["command"] for r in results] == [f"tag-{i}" for i in range(8)]
         assert "not available" in namespace["_call"]("unauthorized-tool", {})["error"]
-        assert "limit reached" in namespace["terminal"]("over-budget")["error"]
+        over = namespace["terminal"]("over-budget")
+        # Refusals retain the documented terminal result shape.
+        assert "limit reached" in over["error"] and "limit reached" in over["output"]
+        assert over["exit_code"] == -1
         assert counter == [budget] and len(seen) == len(log) == budget
     finally:
         stop.set()

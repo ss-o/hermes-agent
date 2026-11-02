@@ -1,6 +1,7 @@
 """Remote session kernels (tools/code_kernel_remote.py) — hermes-agent#96873.
 
-These tests drive execute_in_remote_kernel against a scripted fake env that
+The generated runner is exercised in a real child process for cwd continuity.
+The host-side tests drive execute_in_remote_kernel against a scripted fake env that
 implements the same contract as docker/ssh/modal envs (run-to-completion
 execute()), with canned outputs for the spawn/liveness/cell round-trips.
 The REAL end-to-end behavior (actual detached processes, real files, real
@@ -10,10 +11,13 @@ state_lost/state_reset reporting, fail-open, and owner isolation.
 """
 import json
 import os
+import subprocess
 import sys
 import time
 import unittest
 from unittest.mock import patch
+
+from tests.waiting import wait_until
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -24,6 +28,46 @@ from tools.code_kernel_remote import (
     shutdown_all_remote_kernels,
     shutdown_remote_kernels_for_owner,
 )
+
+
+def test_remote_runner_keeps_voluntary_cwd_changes_between_cells(tmp_path):
+    from tools.code_kernel import RUNNER_CELL_SOURCE
+    from tools.code_kernel_remote import REMOTE_KERNEL_RUNNER_SOURCE
+
+    cells = tmp_path / "cells"
+    cells.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    source = REMOTE_KERNEL_RUNNER_SOURCE.format(
+        cell_source=RUNNER_CELL_SOURCE, capture_limit=10000, idle_exit=60)
+    with subprocess.Popen(
+        [sys.executable, "-c", source], cwd=tmp_path,
+        env=dict(os.environ, HERMES_KERNEL_DIR=str(tmp_path)),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) as runner:
+        def cell(seq, code):
+            # The remote host sends no cwd override.
+            (cells / f"cell_req_{seq:06d}.json").write_text(
+                json.dumps({"id": str(seq), "code": code}), encoding="utf-8")
+            response = cells / f"cell_res_{seq:06d}.json"
+            wait_until(lambda: response.exists() or runner.poll() is not None,
+                       what=f"remote cell {seq} response")
+            assert response.exists(), f"cell {seq} produced no response (exit={runner.poll()})"
+            return json.loads(response.read_text(encoding="utf-8"))
+
+        try:
+            first = cell(1, f"import os\nx = 41\nos.chdir({str(project)!r})")
+            assert first["status"] == "ok", first
+            second = cell(2, "print(x + 1, os.getcwd())")
+            assert second["status"] == "ok", second
+            assert second["stdout"].strip() == f"42 {os.path.realpath(project)}"
+            assert second["execution_count"] == 2
+            assert cell(3, "import sys\nsys.exit(0)")["status"] == "exit"
+            assert runner.wait(timeout=10) == 0
+        finally:
+            if runner.poll() is None:
+                runner.terminate()
+                runner.wait(timeout=10)
 
 
 class ScriptedEnv:
