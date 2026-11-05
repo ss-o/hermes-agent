@@ -95,6 +95,123 @@ def test_approved_replay_applies_reviewed_change(env):
     assert "Step SHARED." in _shared_md(env)
 
 
+@pytest.mark.parametrize("global_gate", [False, True])
+@pytest.mark.parametrize("explicit_second_name", [False, True])
+def test_default_name_batch_preview_and_approval_preserve_each_target(env, global_gate, explicit_second_name):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    env["configure"](write_approval=global_gate, external=not global_gate)
+    before = _shared_md(env)
+    operations = [{"action": "patch", "old_string": "Step 1.", "new_string": "Step 2."}]
+    other_md = env["ext"] / "other-skill" / "SKILL.md"
+    if explicit_second_name:
+        other_md.parent.mkdir()
+        other_md.write_text(SK.format(n="other-skill"))
+        operations.append({"action": "patch", "name": "other-skill",
+                           "old_string": "Step 1.", "new_string": "Step OTHER."})
+    else:
+        operations.append({"action": "patch", "old_string": "Step 2.", "new_string": "Step 3."})
+    staged = json.loads(env["smt"].skill_manage(action="", name="shared-skill", operations=operations))
+    assert staged.get("staged"), staged
+    assert _shared_md(env) == before
+    if explicit_second_name:
+        assert other_md.read_text() == SK.format(n="other-skill")
+    preview = handle_pending_subcommand("skills", ["diff", staged["pending_id"]])
+    assert preview is not None
+    assert "-Step 1." in preview
+    assert "+Step 2." in preview
+    assert "patch would fail" not in preview
+    if explicit_second_name:
+        assert "+Step OTHER." in preview
+    else:
+        assert "-Step 2." in preview and "+Step 3." in preview
+    approved = handle_pending_subcommand("skills", ["approve", staged["pending_id"]])
+    assert approved is not None
+    assert "Approved 1 skills write(s)." in approved
+    assert _shared_md(env) == before.replace("Step 1.", "Step 2." if explicit_second_name else "Step 3.")
+    if explicit_second_name:
+        assert other_md.read_text() == SK.format(n="other-skill").replace("Step 1.", "Step OTHER.")
+    assert env["wa"].get_pending("skills", staged["pending_id"]) is None
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_whole_rewrite_diff_displays_the_content_approval_applies(env, batch):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    before = _shared_md(env)
+    replacement = before.replace("Step 1.", "Reviewed whole-file replacement.")
+    operation = {"name": "shared-skill", "action": "patch", "content": replacement}
+    staged = (_ops(env["smt"], [operation]) if batch
+              else json.loads(env["smt"].skill_manage(**operation)))
+    assert staged.get("staged"), staged
+    assert _shared_md(env) == before
+    preview = handle_pending_subcommand("skills", ["diff", staged["pending_id"]])
+    assert preview is not None
+    assert "-Step 1." in preview
+    assert "+Reviewed whole-file replacement." in preview
+    assert "patch would fail" not in preview
+    approved = handle_pending_subcommand("skills", ["approve", staged["pending_id"]])
+    assert approved is not None
+    assert "Approved 1 skills write(s)." in approved
+    assert _shared_md(env) == replacement
+    assert env["wa"].get_pending("skills", staged["pending_id"]) is None
+
+
+def test_whole_rewrite_batch_preview_matches_ordered_approval(env):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    before = _shared_md(env)
+    replacement = before.replace("Step 1.", "Reviewed intermediate content.")
+    expected = before.replace("Step 1.", "Reviewed final content.")
+    staged = _ops(env["smt"], [
+        {"name": "shared-skill", "action": "patch", "content": replacement},
+        {"name": "shared-skill", "action": "patch",
+         "old_string": "Reviewed intermediate content.", "new_string": "Reviewed final content."},
+    ])
+    assert staged.get("staged"), staged
+    assert _shared_md(env) == before
+    preview = handle_pending_subcommand("skills", ["diff", staged["pending_id"]])
+    assert preview is not None
+    assert "-Reviewed intermediate content." in preview
+    assert "+Reviewed final content." in preview
+    assert "patch would fail" not in preview
+    assert "rewrite 'shared-skill'" in preview
+    assert "(+0/-0 lines)" not in preview
+    approved = handle_pending_subcommand("skills", ["approve", staged["pending_id"]])
+    assert approved is not None
+    assert "Approved 1 skills write(s)." in approved
+    assert _shared_md(env) == expected
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("mixed_fields", [
+    {"old_string": "Step 1."}, {"new_string": ""}, {"new_string": "Other instructions."},
+])
+def test_invalid_mixed_rewrite_preview_does_not_claim_an_applicable_change(env, batch, mixed_fields):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    before = _shared_md(env)
+    operation = {"name": "shared-skill", "action": "patch",
+                 "content": before.replace("Step 1.", "Invalid replacement."), **mixed_fields}
+    payload = ({"action": "batch", "operations": [operation, {
+        "name": "shared-skill", "action": "patch", "old_string": "Step 1.",
+        "new_string": "Next operation against unchanged base.",
+    }]} if batch else operation)
+    # Retained legacy records can predate current argument validation.
+    staged = env["wa"].stage_write("skills", payload, summary="Mixed-shape legacy fixture", origin="foreground")
+    preview = handle_pending_subcommand("skills", ["diff", staged["id"]])
+    assert preview is not None
+    assert "patch would fail" in preview
+    assert "+Invalid replacement." not in preview
+    if batch:
+        assert "+Next operation against unchanged base." in preview
+    approved = handle_pending_subcommand("skills", ["approve", staged["id"]])
+    assert approved is not None
+    assert "Approved 0 skills write(s)." in approved
+    assert _shared_md(env) == before
+    assert env["wa"].get_pending("skills", staged["id"]) is not None
+
+
 def test_replay_refuses_whole_file_write_when_base_changed_after_staging(env):
     r = _ops(env["smt"], [{"name": "shared-skill", "action": "patch",
                            "content": SK.format(n="shared-skill").replace("Step 1.", "Rewritten.")}])

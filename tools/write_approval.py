@@ -284,10 +284,10 @@ def skill_gist(action: str, name: str, *, content: str = "", file_path: str = ""
                old_string: str = "", new_string: str = "") -> str:
     """One-line heuristic gist (no model call) for a pending skill write: create/edit use
     the frontmatter ``description:``; patch/write_file describe the size of the change."""
-    if action in {"create", "edit"} and content:
+    if action in {"create", "edit", "patch"} and content:
         desc = _frontmatter_description(content)
         size = f"{len(content) // 1024 + 1} KB" if len(content) >= 1024 else f"{len(content)} chars"
-        return f"{'create' if action == 'create' else 'rewrite'} '{name}'{f' — {desc}' if desc else ''} ({size})"
+        return f"{'create' if action == 'create' else 'rewrite'} '{name}'{f' - {desc}' if desc else ''} ({size})"
     if action == "patch":
         removed = old_string.count("\n") + 1 if old_string else 0
         added = new_string.count("\n") + 1 if new_string else 0
@@ -328,6 +328,15 @@ def _staged_base(name: str, target_label: str, staged: Optional[dict[str, dict[s
     return ""
 
 
+def _skill_preview_action(action: str, payload: dict[str, Any]) -> tuple[str, Optional[str]]:
+    """Use approval's patch-shape validation before interpreting a full rewrite."""
+    if action != "patch":
+        return action, None
+    from tools.skill_manager_batch import _op_shape_error
+    error = _op_shape_error(action, payload)
+    return ("edit" if payload.get("content") else action), error
+
+
 def skill_pending_diff(
     record: dict[str, Any], staged: Optional[dict[str, dict[str, str]]] = None
 ) -> str:
@@ -343,6 +352,9 @@ def skill_pending_diff(
         return _batch_pending_diff(payload)
     if action == "create":
         return payload.get("content") or ""
+    action, shape_error = _skill_preview_action(action, payload)
+    if shape_error:
+        return f"(patch would fail: {shape_error})"
     if action not in {"edit", "patch", "write_file"}:
         return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
@@ -395,6 +407,9 @@ def _fold_staged(staged: dict[str, dict[str, str]], action: str, name: str,
                  op: dict[str, Any]) -> None:
     """Record what one op leaves in the staged view the next op diffs against."""
     if not name:
+        return
+    action, shape_error = _skill_preview_action(action, op)
+    if shape_error:
         return
     if action == "delete":
         staged.pop(name, None)
