@@ -514,18 +514,24 @@ def should_bypass_active_session(command_name: str | None) -> bool:
 
 
 def _resolve_config_gates() -> set[str]:
-    """Canonical names of commands whose ``gateway_config_gate`` dotpath is truthy in
-    config.yaml (empty set on any error)."""
+    """Commands enabled by config; skill review shares the runtime's gate and coercion."""
     gated = [c for c in COMMAND_REGISTRY if c.gateway_config_gate]
     if not gated:
         return set()
     try:
         from hermes_cli.config import cfg_get, read_raw_config
+        from tools.write_approval import skill_review_gate_enabled
         cfg = read_raw_config()
     except Exception:
         return set()
-    return {cmd.name for cmd in gated
-            if is_truthy_value(cfg_get(cfg, *cmd.gateway_config_gate.split(".")), default=False)}
+    enabled = set()
+    for cmd in gated:
+        gate = cmd.gateway_config_gate
+        active = (skill_review_gate_enabled() if cmd.name == "skills" else
+                  gate is not None and is_truthy_value(cfg_get(cfg, *gate.split(".")), default=False))
+        if active:
+            enabled.add(cmd.name)
+    return enabled
 
 
 def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:

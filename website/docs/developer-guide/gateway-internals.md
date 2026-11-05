@@ -530,7 +530,7 @@ All slash commands in the gateway flow through the same resolution pipeline:
 1. `resolve_command()` from `hermes_cli/commands.py` maps input to canonical name (handles aliases, prefix matching)
 2. The canonical name is checked against `GATEWAY_KNOWN_COMMANDS`
 3. `_handle_message()` (`gateway/run_inbound.py`) looks the handler up by name — `_handle_<name>_command` on the `gateway/slash_commands_*.py` mixins — via `_command_handler_table` over `_IDLE_COMMANDS` / `_PLAIN_COMMANDS` in `gateway/run_busy.py`; there is no `if canonical == ...` chain
-4. Some commands are gated on config (`gateway_config_gate` on `CommandDef`)
+4. Config-gated commands use `gateway_config_gate` on `CommandDef`. `/skills` uses the runtime's shared `skill_review_gate_enabled` predicate, including its accepted configuration values, so either `skills.write_approval` or `skills.external_write_approval` exposes review help and menus. Runtime authorization still applies.
 
 ### Running-Agent Guard
 

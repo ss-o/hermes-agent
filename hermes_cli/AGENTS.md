@@ -43,14 +43,13 @@ it leaks as literal `?[K` under prompt_toolkit's `patch_stdout`; space-pad inste
 
 `COMMAND_REGISTRY` (list of `CommandDef`) is the single source; everything derives from it: CLI
 dispatch (`resolve_command()`), gateway `GATEWAY_KNOWN_COMMANDS` + dispatch, `gateway_help_lines()`,
-`telegram_bot_commands()` (BotCommand menu), `slack_subcommand_map()`, `COMMANDS` (every name and
-alias, for lookups), `COMMANDS_BY_CATEGORY` (`show_help()`). Aliases resolve everywhere but are never
-listed or suggested: `COMMANDS_BY_CATEGORY`, `gateway_help_lines()` and completion
-(`ALIAS_ONLY_COMMANDS`) omit them. Fields: `name` (no slash), `description`, `category`
+`telegram_bot_commands()` (BotCommand menu), `slack_subcommand_map()`, `COMMANDS` (lookups), `COMMANDS_BY_CATEGORY` (help).
+Aliases resolve; help, menus and completions hide them.
+Fields: `name` (no slash), `description`, `category`
 (`Session | Configuration | Tools & Skills | Info | Exit`), `aliases` tuple, `args_hint`,
-`cli_only`, `gateway_only`, `gateway_config_gate` (config dotpath; a `cli_only` command becomes
-gateway-available when truthy — `GATEWAY_KNOWN_COMMANDS` always includes gated commands so the
-gateway can dispatch them; help/menus show them only when the gate is open).
+`cli_only`, `gateway_only`, `gateway_config_gate` (config dotpath; skills uses its runtime review gate).
+`GATEWAY_KNOWN_COMMANDS` always includes gated commands so the
+gateway can dispatch them; help/menus show them only when the gate is open.
 
 **Adding a command:** (1) `CommandDef("mycommand", "What it does", "Session", aliases=("mc",),
 args_hint="[arg]")` in `COMMAND_REGISTRY`; (2) `_handle_mycommand_command(self, cmd_original)` on the

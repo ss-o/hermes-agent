@@ -1,5 +1,9 @@
 """Tests for the central command registry and autocomplete."""
 
+import json
+
+import pytest
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -257,6 +261,39 @@ class TestSlackAppManifest:
 
 class TestGatewayConfigGate:
     """Tests for the gateway_config_gate mechanism on CommandDef."""
+
+    @pytest.mark.parametrize("key", ["write_approval", "external_write_approval"])
+    @pytest.mark.parametrize("value, visible", [
+        (True, True), ("approve", True), ("enabled", True), ("true", True),
+        ("on", True), ("yes", True), ("1", True), (1, False), ("banana", False),
+        (False, False), ("false", False),
+    ])
+    def test_skill_review_discovery_matches_runtime_gate_values(self, tmp_path, monkeypatch, key, value, visible):
+        from tools.write_approval import skill_review_gate_enabled
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(json.dumps({"skills": {key: value}}), encoding="utf-8")
+
+        assert skill_review_gate_enabled() is visible
+        assert any(line.startswith("`/skills`") for line in gateway_help_lines()) is visible
+        assert ("skills" in {name for name, _ in telegram_bot_commands(include_plugins=False)}) is visible
+        assert ("skills" in slack_subcommand_map()) is visible
+
+    @pytest.mark.parametrize("all_writes, external_writes, visible", [
+        (False, False, False), (True, False, True), (False, True, True), (True, True, True),
+    ])
+    def test_skill_review_is_discoverable_when_either_gate_is_on(
+        self, tmp_path, monkeypatch, all_writes, external_writes, visible,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  write_approval: {str(all_writes).lower()}\n"
+            f"  external_write_approval: {str(external_writes).lower()}\n", encoding="utf-8")
+
+        assert any(line.startswith("`/skills`") for line in gateway_help_lines()) is visible
+        assert ("skills" in {name for name, _ in telegram_bot_commands(include_plugins=False)}) is visible
+        assert ("skills" in slack_subcommand_map()) is visible
+        assert "skills" in GATEWAY_KNOWN_COMMANDS
 
 
 
