@@ -116,7 +116,10 @@ always-on-top overlays, OS-window inspection, external-terminal launch and the u
 
 Chats written before the gateway owned sessions show their history but cannot be continued from the
 browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
-sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI.
+sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI. That
+includes chats a phone app started through the dashboard login under its own label (`mobile`, `ios`):
+they continue like Desktop chats. Rows a separate WebUI process wrote with its own agent, and old cron
+or subagent runs, stay read-only.
 
 ### Open it from your phone or another computer
 
@@ -136,9 +139,10 @@ and only that app can change it: a browser signed in over the network cannot.
 **Start** builds the Webapp if it is missing or out of date (the same build `hermes webapp` runs, which
 can take a few minutes the first time), registers its sign-in address with your Nous account when that
 address changed, saves the `webapp:` settings and restarts the gateway, which reads them when it
-starts. While a chat is running the gateway refuses to restart: the pane shows **Restart needed**, the
-settings apply on the next restart, and **Restart gateway** restarts it once the chat ends. **Stop**
-turns the Webapp off the same way. A Webapp you turned on for this computer only
+starts. Until it is done the pane names the step it is on and how long Start has run, also in a
+pane opened during it. While a chat is running the gateway refuses to restart: the pane shows
+**Restart needed**, the settings apply on the next restart, and **Restart gateway** restarts it once
+the chat ends. **Stop** turns the Webapp off the same way. A Webapp you turned on for this computer only
 (`webapp.enabled: true` without Web Access) shows as served on this computer.
 
 Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
