@@ -958,12 +958,12 @@ DEFAULT_CONFIG = {
             # deployment a routing proxy reported / Hermes' fallback route).
             "fields": ["model", "context_pct", "cwd"],
         },
-        # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
-        # config controls visibility not ordering); empty = default set. Available: model,
-        # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
-        # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
-        # prompt_elapsed, idle_since, focus, yolo,
-        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
+        # Status bar fields; CLI/TUI availability differs. Non-empty = listed fields in built-in
+        # order; empty = default set. TUI pins YOLO, shows workspace not title, and has no context meter.
+        # Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
+        # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only),
+        # duration (CLI only), prompt_elapsed, idle_since (CLI only), focus, yolo,
+        # stash, battery, title (CLI only), total_tokens (session Σ, opt-in only). Narrow terminals drop
         # context_detail/prompt_elapsed/idle_since.
         "status_bar": {
             "fields": [],
@@ -1959,7 +1959,7 @@ DEFAULT_CONFIG = {
         "mode": "project",
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
-        # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
+        # per-call). One kernel per (session owner, mode, interpreter, tool-set) keeps state
         # across calls and turns; subagents get their own. Kernels die with the session, after
         # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
         # timed-out/interrupted cell kills the kernel; env is frozen at spawn (reset=true after
