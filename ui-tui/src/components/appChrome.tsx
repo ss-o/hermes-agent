@@ -11,7 +11,6 @@ import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { faces } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { messages, t as tr } from '../i18n/runtime.js'
@@ -25,10 +24,7 @@ import { scrollbarColors } from './overlayPrimitives.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-// Keep verb segment width stable so status-bar content to the right doesn't
-// jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+const MAX_ACTIVITY_WIDTH = 24
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -42,44 +38,34 @@ const SPINNER_TICK_MS = 100
 interface IndicatorRender {
   frame: string
   intervalMs: number
-  // When false, FaceTicker hides the rotating verb and just shows the
-  // glyph + duration.  Lets `unicode` stay minimal while the other
-  // styles keep the verb-rotation flavour users associate with the
-  // running… status.
-  showVerb: boolean
 }
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
     const frames = faces()
 
-    return { frame: frames[tick % frames.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    return { frame: frames[tick % frames.length] ?? '', intervalMs: FACE_TICK_MS }
   }
 
   if (style === 'emoji') {
     return {
       frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '☤ ',
-      intervalMs: SPINNER_TICK_MS * 6,
-      showVerb: true
+      intervalMs: SPINNER_TICK_MS * 6
     }
   }
 
   if (style === 'ascii') {
     return {
       frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
-      intervalMs: SPINNER_TICK_MS,
-      showVerb: true
+      intervalMs: SPINNER_TICK_MS
     }
   }
 
-  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
-  // ~80ms; honour it but bound below at a safe minimum so React
-  // re-renders stay reasonable.  This style is for users who want
-  // the cleanest possible status, so no verb rotation either.
+  // Keep the single-column braille spinner's refresh rate bounded.
   const spinner = unicodeSpinners.braille
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval) }
 }
 
 // `EMOJI_FRAMES` is static, so measure its widest glyph once at module load
@@ -121,44 +107,37 @@ export const MAX_DURATION_WIDTH = Math.max(
   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
 )
 
-// Display width to reserve for the busy indicator so its verb + elapsed-time
-// tail can't shove the model off-screen on narrow terminals. Style-aware:
-// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
-// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
-// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
-  // ` · ` plus the bounded clock (e.g. `59m 59s`).
+// Match the ticker's bounded activity label and live clock, including in unicode style.
+export const busyIndicatorWidth = (
+  style: IndicatorStyle,
+  hasDuration: boolean,
+  activity = messages().status.running,
+  activityLimit = MAX_ACTIVITY_WIDTH
+): number => {
+  const label = 1 + Math.min(MAX_ACTIVITY_WIDTH, activityLimit, stringWidth(activity))
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
-  return indicatorFrameWidth(style) + verb + duration
+  return indicatorFrameWidth(style) + label + duration
 }
 
 function FaceTicker({
+  activity,
+  activityLimit,
   color,
   startedAt,
-  style,
-  verbOverride
+  style
 }: {
+  activity: string
+  activityLimit: number
   color: string
   startedAt?: null | number
   style: IndicatorStyle
-  verbOverride?: string
 }) {
-  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [tick, setTick] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
 
-  // Pre-compute cadence + verb-visibility for the active style so an
-  // `/indicator` switch re-arms the interval (and skips the verb timer
-  // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling. A frozen override (idle compaction) always shows the
-  // verb so "compacting…" is visible even in unicode style (#97239).
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
-  const freezeVerb = Boolean(verbOverride)
-  const displayVerb = freezeVerb || showVerb
+  const { intervalMs } = renderIndicator(style, 0)
 
   useEffect(() => {
     // An overlay is painted OVER the status rule (the modal widget slot, or a
@@ -175,37 +154,43 @@ function FaceTicker({
     setNow(Date.now())
 
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
-    const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render. A
-    // frozen override does not rotate.
-    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    const clock = startedAt != null ? setInterval(() => setNow(Date.now()), 1000) : null
 
     return () => {
       clearInterval(glyph)
-      clearInterval(clock)
 
-      if (verb !== null) {
-        clearInterval(verb)
+      if (clock !== null) {
+        clearInterval(clock)
       }
     }
-  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
+  }, [intervalMs, isOccluded, startedAt])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
-  // Leading space keeps a gap between the frame and the duration when the
-  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
-  // IS shown, its trailing padding already provides the gap, so the extra
-  // space is harmless.
-  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
+  // Our live-roster label appends this suffix; truncate the name, not the count.
+  const suffix = activity.match(/ \+\d+$/u)?.[0] ?? ''
+  const name = suffix ? activity.slice(0, -suffix.length) : activity
+  const activityWidth = Math.min(MAX_ACTIVITY_WIDTH, activityLimit, stringWidth(activity))
 
   return (
-    <Text color={color}>
-      {frame}
-      {verbSegment}
-      {durationSegment}
-    </Text>
+    <Box flexShrink={0}>
+      <Box flexShrink={0} width={indicatorFrameWidth(style)}>
+        <Text color={color}>{frame}</Text>
+      </Box>
+      <Text color={color}> </Text>
+      <Box flexShrink={0} overflow="hidden" width={activityWidth}>
+        <Box width={Math.max(0, activityWidth - stringWidth(suffix))}>
+          <Text color={color} wrap="truncate-end">
+            {name}
+          </Text>
+        </Box>
+        {suffix ? <Text color={color}>{suffix}</Text> : null}
+      </Box>
+      {startedAt != null ? (
+        <Box width={stringWidth(' · ') + MAX_DURATION_WIDTH}>
+          <Text color={color} wrap="truncate-end">{` · ${fmtDuration(Math.max(0, now - startedAt))}`}</Text>
+        </Box>
+      ) : null}
+    </Box>
   )
 }
 
@@ -301,13 +286,6 @@ function noticeColor(level: Notice['level'], t: Theme): string {
   return t.color.accent
 }
 
-function ctxBar(pct: number | undefined, w = 10) {
-  const p = Math.max(0, Math.min(100, pct ?? 0))
-  const filled = Math.round((p / 100) * w)
-
-  return '█'.repeat(filled) + '░'.repeat(w - filled)
-}
-
 // `minLeftContent` is the display width of the high-priority left segments
 // (status indicator + model + context). Reserving it makes the cwd/branch
 // segment on the right yield FIRST on narrow terminals, instead of squeezing
@@ -333,22 +311,14 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
   return { leftWidth, rightWidth, separatorWidth }
 }
 
-// Progressive disclosure for the status rule's lower-priority tail segments.
-// As the terminal narrows we shed the least important pieces first (cost →
-// bg → voice → compressions → duration → context bar), and below the bar
-// breakpoint the context read-out collapses to a bare token count. Status and
-// model are never gated here — they're guaranteed room by `statusRuleWidths`.
+// Only historical diagnostics have breakpoints. Live work is allocated by fit,
+// before the workspace label or diagnostics can consume its space.
 export interface StatusBarSegments {
-  bar: boolean
-  bg: boolean
   cacheHit: boolean
   compactCtx: boolean
   compressions: boolean
-  duration: boolean
   latency: boolean
-  subagents: boolean
   tps: boolean
-  voice: boolean
 }
 
 export function statusBarSegments(cols: number): StatusBarSegments {
@@ -356,12 +326,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
 
   return {
     compactCtx: w < 72,
-    bar: w >= 72,
-    duration: w >= 76,
     compressions: w >= 80,
-    voice: w >= 84,
-    bg: w >= 88,
-    subagents: w >= 92,
     cacheHit: w >= 96,
     latency: w >= 104,
     tps: w >= 110
@@ -429,50 +394,6 @@ function SpawnHud({ t }: { t: Theme }) {
   )
 }
 
-function SessionDuration({ startedAt }: { startedAt: number }) {
-  const [now, setNow] = useState(() => Date.now())
-  const isOccluded = useStore($isStatusRuleOccluded)
-
-  useEffect(() => {
-    // Paused only while an overlay actually covers the status rule — see
-    // FaceTicker.  The `setNow` below already re-seeds from the wall clock
-    // on every re-arm, so it doubles as the reveal catch-up.
-    if (isOccluded) {
-      return
-    }
-
-    setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
-
-    return () => clearInterval(id)
-  }, [isOccluded, startedAt])
-
-  return fmtDuration(now - startedAt)
-}
-
-function IdleSince({ endedAt }: { endedAt: number }) {
-  // Time since the last final agent response. Re-ticks every second like
-  // SessionDuration so the read-out stays live while the session idles.
-  const [now, setNow] = useState(() => Date.now())
-  const isOccluded = useStore($isStatusRuleOccluded)
-
-  useEffect(() => {
-    // Paused only while an overlay actually covers the status rule — see
-    // FaceTicker.  The `setNow` below re-seeds from the wall clock on reveal
-    // so the idle read-out is not frozen when the overlay closes.
-    if (isOccluded) {
-      return
-    }
-
-    setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
-
-    return () => clearInterval(id)
-  }, [endedAt, isOccluded])
-
-  return `✓ ${fmtDuration(now - endedAt)}`
-}
-
 // `wire` is the level the route actually sends (session.info.reasoning_effort_wire):
 // a clamped Hermes step such as `ultra` reads `ultra→max`, like the CLI's
 // "ultra (sends max on this route)", never as a distinct wire level (#61634).
@@ -530,7 +451,36 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+const nonnegativeMeasurement = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+function contextUsageLabel(usage: Usage, compact: boolean, visible: (name: string) => boolean): string {
+  const used = usage.context_used
+  const max = usage.context_max
+  const pct = usage.context_percent
+  const hasOccupancy = nonnegativeMeasurement(used) && nonnegativeMeasurement(max) && max > 0
+  const parts: string[] = []
+
+  if (visible('context_detail') && hasOccupancy) {
+    parts.push(compact ? `${compactNumber(used)} tok` : `${compactNumber(used)}/${compactNumber(max)}`)
+  }
+
+  if (visible('context_pct') && nonnegativeMeasurement(pct) && pct <= 100) {
+    parts.push(`${pct}%`)
+  }
+
+  if (parts.length) {
+    return `${usage.context_estimated ? '~' : ''}${parts.join(' ')}`
+  }
+
+  // Session token totals are not context occupancy. Keep their meaning explicit.
+  return !hasOccupancy && visible('context_detail') && nonnegativeMeasurement(usage.total) && usage.total > 0
+    ? `${compactNumber(usage.total)} total tok`
+    : ''
+}
+
 export function StatusRule({
+  activityLabel,
   battery,
   focusView,
   cwdLabel,
@@ -548,19 +498,18 @@ export function StatusRule({
   notice,
   usage,
   bgCount,
-  lastTurnEndedAt,
   liveSessionCount,
   sessionTitle,
-  sessionStartedAt,
   turnStartedAt,
   voiceLabel,
+  yolo = false,
   onSessionCountClick,
   t
 }: StatusRuleProps) {
-  // Not a hook: tests call StatusRule as a plain function, and the rule re-renders on every tick anyway.
+  // Keep layout calculation pure; only the busy ticker needs a live clock.
   const T = messages()
+  const activity = compacting ? T.status.compacting : activityLabel || T.status.running
   const pct = usage.context_percent ?? undefined
-  const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
 
@@ -568,20 +517,7 @@ export function StatusRule({
   // classic CLI bar). null = user hasn't customized → everything shows.
   const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
 
-  // On narrow terminals the context read-out collapses to a bare token count
-  // (`12k tok`) and the visual fill bar is dropped entirely.
-  const ctxLabel =
-    ok('context_detail') || ok('context_pct')
-      ? usage.context_max
-        ? segs.compactCtx
-          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
-        : (usage.total ?? 0) > 0
-          ? `${compactNumber(usage.total)} tok`
-          : ''
-      : ''
-
-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+  const ctxLabel = contextUsageLabel(usage, segs.compactCtx, ok)
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
@@ -590,10 +526,8 @@ export function StatusRule({
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
-  // A credits notice replaces the status/verb slot, but only when idle —
-  // while busy the FaceTicker always wins (R1 render priority). The notice
-  // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
-  const showNotice = !busy && !!notice?.text
+  // Warnings remain useful mid-turn. Informational notices wait until idle.
+  const showNotice = !!notice?.text && (!busy || notice.level === 'warn' || notice.level === 'error')
   // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
   // only a small bounded width for it in the essentials budget — enough that
   // a short notice never gets crushed, but a long one ellipsizes instead of
@@ -604,33 +538,59 @@ export function StatusRule({
 
   // Width of the must-keep left segments (indicator + model + context). They
   // are pinned (never shrink) and reserved so the cwd/branch on the right
-  // yields first. The busy face width depends on the active /indicator style
-  // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
+  // yields first. The busy indicator reserves its actual activity label. When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
-  const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
-    : showNotice
-      ? noticeReserve
-      : stringWidth(status)
+  const focusWidth = focusView ? stringWidth(' │ ◉ focus') : 0
 
-  const essentialWidth =
+  const fixedWidth =
     stringWidth('─ ') +
+    (yolo ? stringWidth('⚠ YOLO │ ') : 0) +
     batteryWidth +
-    slotWidth +
+    (busy && showNotice ? stringWidth(' │ ') + noticeReserve : 0) +
     stringWidth(' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
-  const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
+  // The name yields before model/context, while the glyph and live clock keep
+  // fixed columns. Use the same limit in reservation and rendering.
+  const activityLimit = Math.max(
+    0,
+    Math.min(MAX_ACTIVITY_WIDTH, cols - fixedWidth - focusWidth - busyIndicatorWidth(indicatorStyle, turnStartedAt != null, ''))
+  )
+
+  const slotWidth = busy
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, activity, activityLimit)
+    : showNotice
+      ? noticeReserve
+      : stringWidth(status)
+
+  const essentialWidth = fixedWidth + slotWidth
+
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+  const voiceText = ok('voice') && voiceLabel && /^[●◉]/u.test(voiceLabel) ? voiceLabel : ''
+  const subagentText = ok('bg_subagents') && subagentCount > 0 ? `⛓ ${subagentCount}` : ''
+  const bgText = ok('bg_tasks') && bgCount > 0 ? T.status.bgTasks(bgCount) : ''
+
+  const workWidth = [voiceText, subagentText, bgText].reduce(
+    (sum, text) => sum + (text ? stringWidth(` │ ${text}`) : 0),
+    0
+  )
+
+  const rightLabel = cwdLabel || (ok('title') ? (sessionTitle ?? '') : '')
+
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(
+    cols,
+    rightLabel,
+    essentialWidth + focusWidth + workWidth
+  )
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // descending priority order: active work, compressions, diagnostics, sessions.
+  // Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
-  let tailBudget = Math.max(0, leftWidth - essentialWidth)
+  let tailBudget = Math.max(0, leftWidth - essentialWidth - focusWidth)
 
   const fits = (w: number) => {
     if (tailBudget >= w) {
@@ -642,8 +602,11 @@ export function StatusRule({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const sessionCountText = liveSessionCount > 1 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const showVoice = !!voiceText && fits(SEP + stringWidth(voiceText))
+  const showSubagents = !!subagentText && fits(SEP + stringWidth(subagentText))
+  const showBg = !!bgText && fits(SEP + stringWidth(bgText))
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -653,15 +616,6 @@ export function StatusRule({
     typeof usage.dev_credits_spent_micros === 'number'
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
-
-  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
-  const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
-
-  // Idle clock — time since the last final agent response. Hidden while busy
-  // (the FaceTicker's elapsed tail covers the live turn) and before the first
-  // turn completes. Shares the duration breakpoint and width reservation.
-  const showIdle =
-    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions =
     segs.compressions &&
@@ -679,13 +633,7 @@ export function StatusRule({
   const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
-  const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
-  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
-
-  const showSubagents =
-    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
   // Parked-background reassurance: a top-level delegate_task runs in the
   // background, so the turn ends (idle) while the subagent keeps working and its
@@ -728,6 +676,7 @@ export function StatusRule({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
+          {yolo ? <Text color={t.color.warn}>{'⚠ YOLO │ '}</Text> : null}
           {showBattery ? (
             <Text color={batteryColorVal}>
               {batteryText}
@@ -735,12 +684,7 @@ export function StatusRule({
             </Text>
           ) : null}
           {busy ? (
-            <FaceTicker
-              color={statusColor}
-              startedAt={turnStartedAt}
-              style={indicatorStyle}
-              verbOverride={compacting ? T.status.compacting : undefined}
-            />
+            <FaceTicker activity={activity} activityLimit={activityLimit} color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {displayStatus(status)}
@@ -753,6 +697,7 @@ export function StatusRule({
         {showNotice ? (
           <Box flexDirection="row" flexShrink={1} overflow="hidden">
             <Text color={noticeColor(notice!.level, t)} wrap="truncate-end">
+              {busy ? ' │ ' : ''}
               {notice!.text}
             </Text>
           </Box>
@@ -769,7 +714,7 @@ export function StatusRule({
             {modelText}
           </Text>
           {ctxLabel ? (
-            <Text color={t.color.muted} wrap="truncate-end">
+            <Text color={barColor} wrap="truncate-end">
               {' │ '}
               {ctxLabel}
             </Text>
@@ -781,25 +726,7 @@ export function StatusRule({
             <Text color={t.color.warn}>◉ focus</Text>
           </Box>
         ) : null}
-        {showBar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <Text color={barColor}>[{bar}]</Text>{' '}
-            <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
-          </Text>
-        ) : null}
-        {showDuration ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <SessionDuration startedAt={sessionStartedAt!} />
-          </Text>
-        ) : null}
-        {showIdle ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <IdleSince endedAt={lastTurnEndedAt!} />
-          </Text>
-        ) : null}
+
         {showCompressions ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -881,7 +808,7 @@ export function StatusRule({
         <>
           <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
           <Box flexShrink={0} width={rightWidth}>
-            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
+            <Text color={t.color.label} wrap="truncate-end">
               {rightLabel}
             </Text>
           </Box>
@@ -986,6 +913,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  activityLabel?: string
   battery?: BatteryInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean
@@ -1014,6 +942,7 @@ interface StatusRuleProps {
   turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
+  yolo?: boolean
   onSessionCountClick?: () => void
 }
 

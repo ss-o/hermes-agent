@@ -1,18 +1,14 @@
+import { stringWidth } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
 
-import { padVerb, VERB_PAD_LEN } from '../components/appChrome.js'
-import { VERBS } from '../content/verbs.js'
+import { busyIndicatorWidth } from '../components/appChrome.js'
 
-describe('FaceTicker verb padding', () => {
-  it('pads every verb to the same width', () => {
-    for (const verb of VERBS) {
-      expect(padVerb(verb)).toHaveLength(VERB_PAD_LEN)
-    }
+describe('actual activity width', () => {
+  it('budgets the displayed tool name even for the unicode indicator', () => {
+    expect(busyIndicatorWidth('unicode', false, 'terminal')).toBe(stringWidth('⠋ terminal'))
   })
 
-  it('keeps trailing ellipsis attached', () => {
-    for (const verb of VERBS) {
-      expect(padVerb(verb).startsWith(`${verb}…`)).toBe(true)
-    }
+  it('bounds long tool names so they cannot consume the model slot', () => {
+    expect(busyIndicatorWidth('unicode', false, 'x'.repeat(1000))).toBe(stringWidth('⠋ ' + 'x'.repeat(24)))
   })
 })

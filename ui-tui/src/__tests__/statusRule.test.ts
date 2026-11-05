@@ -70,27 +70,20 @@ describe('statusBarSegments', () => {
     // read-outs, so they disappear before any pre-existing segment.
     expect(statusBarSegments(108)).toMatchObject({ cacheHit: true, latency: true, tps: false })
     expect(statusBarSegments(100)).toMatchObject({ cacheHit: true, latency: false, tps: false })
-    expect(statusBarSegments(94)).toMatchObject({ cacheHit: false, latency: false, tps: false, subagents: true })
+    expect(statusBarSegments(94)).toMatchObject({ cacheHit: false, latency: false, tps: false })
   })
 
-  it('collapses the context bar to a token count on narrow terminals', () => {
+  it('collapses context details on narrow terminals', () => {
     const s = statusBarSegments(60)
 
     expect(s.compactCtx).toBe(true)
-    expect(s.bar).toBe(false)
-    expect(s.duration).toBe(false)
+    expect(s.cacheHit).toBe(false)
+    expect(s.latency).toBe(false)
   })
 
   it('sheds tail segments in priority order as the terminal narrows', () => {
-    // the context bar is the last of the tail to go.
-    const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
-      'bar',
-      'duration',
-      'compressions',
-      'voice',
-      'bg',
-      'subagents'
-    ]
+    // Historical diagnostics disappear before the compact essentials.
+    const order: (keyof ReturnType<typeof statusBarSegments>)[] = ['compressions', 'cacheHit', 'latency', 'tps']
 
     let prevCount = Infinity
 
@@ -105,9 +98,7 @@ describe('statusBarSegments', () => {
 })
 
 describe('busyIndicatorWidth', () => {
-  it('reserves a bare spinner for the verb-less unicode style', () => {
-    // unicode is a 1-col braille spinner with no verb; far slimmer than the
-    // kaomoji face which carries a wide glyph + rotating verb.
+  it('reserves less space for a unicode spinner than a kaomoji face', () => {
     expect(busyIndicatorWidth('unicode', false)).toBeLessThan(busyIndicatorWidth('kaomoji', false))
   })
 

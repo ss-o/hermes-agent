@@ -140,17 +140,17 @@ describe('StatusRule session title', () => {
     }
   })
 
-  it('pins the named session at the far-right edge instead of the cwd label', () => {
+  it('preserves workspace identity when the session is named without a background fill', () => {
     const element = StatusRule({
       ...baseProps,
       sessionTitle: 'weekly-digest'
     })
 
     const rendered = textContent(element)
-    const title = findElementWithText(element, 'weekly-digest')
+    const workspace = findElementWithText(element, '~/repo')
 
-    expect(rendered).toContain('weekly-digest')
-    expect(rendered).not.toContain('~/repo')
+    expect(rendered).not.toContain('weekly-digest')
+    expect(rendered).toContain('~/repo')
     // Regression for issue #82465: a raw, full-saturation accent-hue
     // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
     // near-white tone never designed to sit on it) rendered at roughly a
@@ -158,8 +158,8 @@ describe('StatusRule session title', () => {
     // the accent color goes on the text instead, matching the theme's
     // own convention that a raw accent hue is never used as a solid
     // fill elsewhere (fills are always softened, e.g. activeRow).
-    expect(title?.props.backgroundColor).toBeUndefined()
-    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
+    expect(workspace?.props.backgroundColor).toBeUndefined()
+    expect(workspace?.props.color).toBe(DEFAULT_THEME.color.label)
   })
 })
 
@@ -208,10 +208,7 @@ describe('StatusRule background-subagent indicator', () => {
     expect(textContent(element)).not.toContain('resumes when')
   })
 
-  it('drops the subagent segment before the bg segment on a narrow terminal', () => {
-    // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
-    // (88) too — both gone. Assert the lower-priority subagent indicator is
-    // not shown when space is tight even with a live count.
+  it('keeps the subagent count when a narrow terminal has room for it', () => {
     const element = StatusRule({
       ...baseProps,
       cols: 44,
@@ -219,7 +216,7 @@ describe('StatusRule background-subagent indicator', () => {
       usage: { ...baseProps.usage, active_subagents: 2 }
     })
 
-    expect(textContent(element)).not.toContain('⛓')
+    expect(textContent(element)).toContain('⛓ 2')
   })
 })
 
@@ -232,7 +229,7 @@ describe('StatusRule session count click target', () => {
       busy: false,
       cols: 100,
       cwdLabel: '~/repo',
-      liveSessionCount: 1,
+      liveSessionCount: 2,
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
@@ -244,7 +241,7 @@ describe('StatusRule session count click target', () => {
       voiceLabel: ''
     })
 
-    const clickableSessionCount = findClickableWithText(element, '1 session')
+    const clickableSessionCount = findClickableWithText(element, '2 sessions')
 
     expect(clickableSessionCount).not.toBeNull()
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
@@ -304,7 +301,7 @@ describe('StatusRule credits notice render priority', () => {
     expect(rendered).toContain('50k')
   })
 
-  it('busy wins: the FaceTicker shows, the notice is hidden mid-turn', () => {
+  it('keeps credit warnings alongside the activity indicator mid-turn', () => {
     const element = StatusRule({
       ...baseProps,
       busy: true,
@@ -314,8 +311,7 @@ describe('StatusRule credits notice render priority', () => {
 
     const rendered = textContent(element)
 
-    // Notice must NOT render while busy.
-    expect(rendered).not.toContain('⚠ 90% used')
+    expect(rendered).toContain('⚠ 90% used')
     // Model still visible.
     expect(rendered).toContain('opus 4.8')
   })
@@ -388,7 +384,7 @@ describe('StatusRule idle-since read-out', () => {
     return findComponentByName(node.props.children, name)
   }
 
-  it('shows time since the last final agent response when idle', () => {
+  it('does not render an idle clock after the last final agent response', () => {
     const endedAt = Date.now() - 42_000
 
     const element = StatusRule({
@@ -399,8 +395,7 @@ describe('StatusRule idle-since read-out', () => {
 
     const idle = findComponentByName(element, 'IdleSince')
 
-    expect(idle).not.toBeNull()
-    expect(idle!.props.endedAt).toBe(endedAt)
+    expect(idle).toBeNull()
   })
 
   it('is hidden while a turn is busy', () => {

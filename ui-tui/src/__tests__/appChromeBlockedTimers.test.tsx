@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
@@ -8,15 +9,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewayProvider } from '../app/gatewayContext.js'
 import type { AppLayoutProps, OverlayState, UiState } from '../app/interfaces.js'
 import { patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { patchTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { $voicePartial } from '../app/voicePartialStore.js'
 import { StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
+import { applyLocale, resetLocale } from '../i18n/runtime.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac } from '../lib/platform.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type StatusRuleProps = React.ComponentProps<typeof StatusRule>
 type IntervalSpy = ReturnType<typeof vi.spyOn<typeof globalThis, 'setInterval'>>
+
+const { load } = createRequire(import.meta.url)('js-yaml') as { load: (text: string) => unknown }
 
 // Fixed wall clock so the rendered elapsed read-outs are exact strings rather
 // than whatever the machine's clock happens to produce mid-test.
@@ -28,20 +34,20 @@ const mounted: Array<() => void> = []
  * Mount a real StatusRule through Ink so the leaf components' effects — and
  * therefore their `setInterval` calls — actually run.  The existing
  * appChromeStatusRule tests invoke `StatusRule(...)` as a plain function,
- * which only builds the element tree and never mounts FaceTicker /
- * SessionDuration / IdleSince, so it cannot observe timer behaviour.
+ * which only builds the element tree and never mounts the busy ticker,
+ * so it cannot observe timer behaviour.
  *
  * Teardown is registered up front so a failing assertion still unmounts the
  * tree — a leaked instance would keep re-arming timers into the next test.
  */
-const mountTree = (tree: React.ReactElement, { interactive = false } = {}) => {
+const mountTree = (tree: React.ReactElement, { interactive = false, columns = 120 } = {}) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
 
   let output = ''
 
-  Object.assign(stdout, { columns: 120, isTTY: false, rows: 20 })
+  Object.assign(stdout, { columns, isTTY: false, rows: 20 })
   // PromptZone's prompts call `useInput`, which needs raw mode; without it Ink
   // swaps the whole tree for an error panel and stops updating.
   Object.assign(
@@ -93,8 +99,7 @@ const idleProps: StatusRuleProps = {
   voiceLabel: ''
 }
 
-// Busy swaps the idle read-out for the FaceTicker, which owns the glyph +
-// verb + elapsed-clock trio.
+// Only active work owns a glyph ticker and an elapsed clock.
 const busyProps: StatusRuleProps = {
   ...idleProps,
   busy: true,
@@ -169,7 +174,7 @@ const layoutProps: AppLayoutProps = {
     showStickyPrompt: false,
     statusColor: DEFAULT_THEME.color.ok,
     stickyPrompt: '',
-    turnStartedAt: null,
+    turnStartedAt: T0 - 30_000,
     voiceLabel: ''
   },
   transcript: {
@@ -188,15 +193,19 @@ const layoutProps: AppLayoutProps = {
 }
 
 /** Mount the real AppLayout with the given overlay + ui state applied first. */
-const mountLayout = (overlay: Partial<OverlayState> = {}, ui: Partial<UiState> = {}) => {
-  patchUiState({ sessionTitle: 'test', sid: 'sid-1', status: 'ready', ...ui })
+const mountLayout = (
+  overlay: Partial<OverlayState> = {},
+  ui: Partial<UiState> = {},
+  composer: Partial<AppLayoutProps['composer']> = {}
+) => {
+  patchUiState({ busy: true, sessionTitle: 'test', sid: 'sid-1', status: 'running…', ...ui })
   patchOverlayState(overlay)
 
   return mountTree(
     <GatewayProvider value={gatewayStub}>
-      <AppLayout {...layoutProps} />
+      <AppLayout {...layoutProps} composer={{ ...layoutProps.composer, ...composer }} />
     </GatewayProvider>,
-    { interactive: true }
+    { interactive: true, columns: composer.cols ?? 120 }
   )
 }
 
@@ -208,8 +217,11 @@ let intervalSpy: IntervalSpy
 let nowSpy: ReturnType<typeof vi.spyOn<typeof Date, 'now'>>
 
 beforeEach(() => {
+  resetLocale()
   resetOverlayState()
   resetUiState()
+  resetTurnState()
+  $voicePartial.set('')
   nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0)
   intervalSpy = vi.spyOn(globalThis, 'setInterval')
 })
@@ -223,13 +235,14 @@ afterEach(() => {
   nowSpy.mockRestore()
   resetOverlayState()
   resetUiState()
+  resetTurnState()
 })
 
 describe('status-chrome timers under an occluding overlay', () => {
-  it('arms the one-second SessionDuration + IdleSince clocks when nothing covers the rule', () => {
+  it('arms no idle clocks even when nothing covers the rule', () => {
     mount(idleProps)
 
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(0)
   })
 
   it('arms no timer at all when an occluding overlay is already open', () => {
@@ -240,12 +253,11 @@ describe('status-chrome timers under an occluding overlay', () => {
     expect(oneSecondTimers(intervalSpy)).toBe(0)
   })
 
-  it('arms the FaceTicker glyph/verb/clock trio mid-turn when nothing covers the rule', () => {
+  it('arms one glyph ticker and one clock without random verb rotation', () => {
     mount(busyProps)
 
-    // kaomoji cadence for the glyph + verb rotation, plus the elapsed clock.
-    expect(armedDelays(intervalSpy)).toContain(2500)
-    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
+    expect(armedDelays(intervalSpy).filter(delay => delay === 2500)).toHaveLength(1)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
   })
 
   it('freezes the FaceTicker verb on compacting and skips verb rotation (#97239)', () => {
@@ -284,21 +296,17 @@ describe('status-chrome timers under an occluding overlay', () => {
     patchUiState({ statusBar: 'bottom' })
     patchOverlayState({ modelPicker: true })
 
-    mount(idleProps)
+    mount(busyProps)
 
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
   })
 
-  it('re-syncs the elapsed read-outs from the wall clock on reveal instead of resuming stale', async () => {
-    // Regression guard for the naive fix: an early `return` that pauses the
-    // interval but never re-seeds `now` leaves SessionDuration and IdleSince
-    // frozen at the instant the overlay opened.
+  it('re-syncs the live turn clock from wall time when the rule is revealed', async () => {
     patchOverlayState({ sessions: true })
 
-    const rule = mount(idleProps)
+    const rule = mount(busyProps)
 
-    expect(rule.output()).toContain('1m 0s')
-    expect(rule.output()).toContain('✓ 5s')
+    expect(rule.output()).toContain('30s')
 
     // Five minutes of wall clock elapse while the overlay covers the rule.
     nowSpy.mockReturnValue(T0 + 300_000)
@@ -306,28 +314,26 @@ describe('status-chrome timers under an occluding overlay', () => {
     resetOverlayState()
     // Poll for the reveal frame instead of a fixed tick: under CI load the
     // store-driven re-render can land well after one 20ms scheduler turn.
-    await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'), { interval: 10, timeout: 5_000 })
+    await vi.waitFor(() => expect(rule.output()).toContain('5m 30s'), { interval: 10, timeout: 5_000 })
 
     const resumed = rule.output()
 
     // Caught up to real elapsed time, not stuck on the pre-overlay values.
-    expect(resumed).toContain('6m 0s')
-    expect(resumed).toContain('✓ 5m 5s')
-    expect(resumed).not.toContain('1m 0s')
+    expect(resumed).toContain('5m 30s')
+    expect(resumed).not.toContain('✓')
 
-    // …and the clocks are running again.
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
   })
 
   it('tears the clocks down when an overlay opens over an already-running status rule', async () => {
-    mount(idleProps)
+    mount(busyProps)
 
-    // Handles of the two live 1-second clocks (SessionDuration + IdleSince).
+    // The live turn clock must be cleared, not replaced while occluded.
     const clocks = intervalSpy.mock.results
       .filter((_result, i) => intervalSpy.mock.calls[i]?.[1] === 1000)
       .map(result => result.value as ReturnType<typeof setInterval>)
 
-    expect(clocks).toHaveLength(2)
+    expect(clocks).toHaveLength(1)
 
     const clearSpy = vi.spyOn(globalThis, 'clearInterval')
 
@@ -339,8 +345,7 @@ describe('status-chrome timers under an occluding overlay', () => {
       expect(clearSpy).toHaveBeenCalledWith(handle)
     }
 
-    // … and the occluded re-run arms no replacement (still just the original two).
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
 
     clearSpy.mockRestore()
   })
@@ -381,7 +386,7 @@ describe('status-chrome timers track the current overlay model', () => {
   it.each(occluding)('pauses the status clocks while %s covers the rule', (_name, patch) => {
     patchOverlayState(patch)
 
-    mount(idleProps)
+    mount(busyProps)
 
     expect(oneSecondTimers(intervalSpy)).toBe(0)
   })
@@ -389,9 +394,9 @@ describe('status-chrome timers track the current overlay model', () => {
   it.each(nonOccluding)('keeps the status clocks running while %s is open', (_name, patch) => {
     patchOverlayState(patch)
 
-    mount(idleProps)
+    mount(busyProps)
 
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
   })
 
   it('keeps the clocks running for the non-occluding ambient dock', () => {
@@ -399,9 +404,9 @@ describe('status-chrome timers track the current overlay model', () => {
     // doesn't cover the status rule, so pausing there would be a regression.
     patchOverlayState({ ambient: [{ appId: 'clock', state: null }] })
 
-    mount(idleProps)
+    mount(busyProps)
 
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
   })
 })
 
@@ -418,8 +423,8 @@ describe('AppLayout status-rule visibility', () => {
     // The rule is genuinely rendered — the approval prompt pushed it, it did
     // not cover it — so freezing its clock would freeze something visible.
     expect(layout.output()).toContain('~/repo')
-    expect(layout.output()).toContain('1m 0s')
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(layout.output()).toContain('30s')
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
 
     // …and it really advances: drive the armed 1s handlers forward.
     nowSpy.mockReturnValue(T0 + 30_000)
@@ -431,7 +436,7 @@ describe('AppLayout status-rule visibility', () => {
     await flush()
     await flush()
 
-    expect(layout.output()).toContain('1m 30s')
+    expect(layout.output()).toContain('1m 0s')
   })
 
   it('arms no clock under a floating model picker while the rule is at the top', async () => {
@@ -447,6 +452,107 @@ describe('AppLayout status-rule visibility', () => {
 
     await flush()
 
-    expect(oneSecondTimers(intervalSpy)).toBe(2)
+    expect(oneSecondTimers(intervalSpy)).toBe(1)
+  })
+
+  it('uses the current tool roster and returns to generic activity when tools finish', async () => {
+    patchTurnState({
+      tools: [
+        { id: 'one', name: 'terminal' },
+        { id: 'two', name: 'read_file' }
+      ]
+    })
+    const layout = mountLayout({}, { info: { model: 'test-model', yolo: true } as UiState['info'] })
+
+    expect(layout.output()).toContain('terminal +1')
+    expect(layout.output()).toContain('⚠ YOLO')
+    patchTurnState({ tools: [] })
+    await vi.waitFor(() => expect(layout.output()).toContain('running…'), { interval: 10, timeout: 5_000 })
+  })
+})
+
+describe('composer action hints', () => {
+  it('keeps the stop action complete when a profile name leaves too little room for both actions', async () => {
+    const layout = mountLayout(
+      {},
+      {
+        busy: true,
+        busyInputMode: 'interrupt',
+        info: { model: 'test', tools: {}, skills: {}, profile_name: 'research' }
+      },
+      { cols: 40 }
+    )
+
+    await flush()
+
+    expect(layout.output()).toContain('Ctrl+C: stop')
+    expect(layout.output()).not.toContain('Enter: interrupt')
+  })
+
+  it.each(['queue', 'steer', 'interrupt'] as const)(
+    'keeps both %s and stop actions complete at 40 columns',
+    async busyInputMode => {
+      const layout = mountLayout({}, { busy: true, busyInputMode }, { cols: 40 })
+
+      await flush()
+
+      expect(layout.output()).toContain(`Enter: ${busyInputMode} · Ctrl+C: stop`)
+    }
+  )
+
+  it('does not let an old translated interrupt key replace the new Enter guidance', async () => {
+    applyLocale('de', {
+      lang: 'de',
+      surface: 'tui',
+      messages: { 'composer.interruptHint': 'Ctrl+C zum Unterbrechen…' }
+    })
+    const layout = mountLayout({}, { busy: true, busyInputMode: 'interrupt' })
+
+    await flush()
+
+    expect(layout.output()).toContain('Enter interrupts and sends')
+  })
+
+  it.each([
+    ['queue', 'Enter queues next message'],
+    ['steer', 'Enter steers current turn'],
+    ['interrupt', 'Enter interrupts and sends']
+  ] as const)('describes Enter in %s mode on fresh and existing transcripts', async (busyInputMode, hint) => {
+    for (const empty of [true, false]) {
+      const layout = mountLayout({}, { busy: true, busyInputMode }, { empty })
+
+      await flush()
+
+      expect(layout.output()).toContain(hint)
+      expect(layout.output()).toContain('Ctrl+C stops')
+      mounted.pop()!()
+    }
+  })
+
+  it('shows command, file, help and editor affordances when idle', async () => {
+    const layout = mountLayout({}, { busy: false }, { empty: false })
+
+    await flush()
+
+    expect(layout.output()).toContain(`/ commands · @ files · ? help · ${isMac ? 'Cmd' : 'Ctrl'}+G editor`)
+  })
+
+  it('prioritizes live transcription without replacing a typed draft', async () => {
+    $voicePartial.set('live dictation')
+
+    const layout = mountLayout({}, { busy: true, busyInputMode: 'queue' })
+
+    await flush()
+
+    expect(layout.output()).toContain('live dictation')
+    expect(layout.output()).not.toContain('Enter queues')
+    mounted.pop()!()
+
+    const draft = mountLayout({}, { busy: true }, { input: 'my draft' })
+
+    await flush()
+
+    expect(draft.output()).toContain('my draft')
+    expect(draft.output()).not.toContain('live dictation')
   })
 })

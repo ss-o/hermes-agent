@@ -1,19 +1,19 @@
 // Importing the apps barrel registers the reference widget apps at startup.
 import '../sdk/apps/index.js'
 
-import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
+import { AlternateScreen, Box, NoSelect, ScrollBox, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppLayoutProps } from '../app/interfaces.js'
+import type { AppLayoutProps, BusyInputMode } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { $voicePartial } from '../app/voicePartialStore.js'
 import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
-import { placeholder } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import { useT } from '../i18n/useT.js'
 import {
@@ -23,6 +23,7 @@ import {
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { isMac } from '../lib/platform.js'
 import { composerPromptText } from '../lib/prompt.js'
 import { sessionLabel } from '../lib/sessionLabel.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
@@ -46,10 +47,20 @@ import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './t
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
 
-/** Blank-input hint: live STT text while dictating (stt.streaming) always wins; else a rotating
- *  placeholder on a fresh transcript, or the busy hint. */
-const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: string) =>
-  voicePartial || (freshTranscript ? placeholder() : busyHint)
+const composerHint = (
+  voicePartial: string,
+  busy: boolean,
+  mode: BusyInputMode,
+  columns: number,
+  T: ReturnType<typeof useT>['composer']
+) => {
+  const busyHints = { interrupt: T.interruptEnterHint, queue: T.queueHint, steer: T.steerHint }
+  const shortHints = { interrupt: T.interruptShortHint, queue: T.queueShortHint, steer: T.steerShortHint }
+  const full = busy ? busyHints[mode] : T.idleHint(isMac ? 'Cmd+G' : 'Ctrl+G')
+  const candidates = [full, busy ? shortHints[mode] : T.idleShortHint, busy ? T.stopHint : '']
+
+  return voicePartial || candidates.find(hint => stringWidth(hint) <= columns) || ''
+}
 
 const PET_BOTTOM = 3 // rows the pet floats above the screen bottom (over the composer)
 const PET_PAD_LEFT = 2
@@ -473,7 +484,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composerHint(voicePartial, composer.empty, ui.busy ? T.composer.interruptHint : '')}
+                  placeholder={composerHint(voicePartial, ui.busy, ui.busyInputMode, inputColumns, T.composer)}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent
@@ -535,6 +546,13 @@ const StatusRulePane = memo(function StatusRulePane({
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top'; nativeMode: boolean }) {
   const ui = useStore($uiState)
 
+  // Only the live tool roster supplies names, never reasoning text or a past tool.
+  const activityLabel = useTurnSelector(state => {
+    const first = state.tools[0]
+
+    return first ? `${first.name}${state.tools.length > 1 ? ` +${state.tools.length - 1}` : ''}` : ''
+  })
+
   if (ui.statusBar === 'off' || (nativeMode ? at !== 'top' : ui.statusBar !== at)) {
     return null
   }
@@ -542,6 +560,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        activityLabel={activityLabel}
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
@@ -567,6 +586,7 @@ const StatusRulePane = memo(function StatusRulePane({
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}
         voiceLabel={status.voiceLabel}
+        yolo={ui.info?.yolo}
       />
     </Box>
   )
