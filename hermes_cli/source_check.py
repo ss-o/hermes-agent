@@ -484,10 +484,15 @@ def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
 
 def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
                   heal: Optional[tuple[Path, dict]]) -> None:
-    """Compare the checkout with ``selected_branch``'s remote tip, falling back to main if it was deleted."""
+    """Compare a remote tip; maintained fork deliveries never heal a missing branch to main."""
     result["branch"] = selected_branch
     remote = _branch_remote(co, selected_branch)
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
+    delivery = resolve_source_target("main", repository=co.repository or OFFICIAL_REPOSITORY).branch
+    if missing and delivery != "main":
+        result.update(error="branch-unavailable", reason="branch-unavailable",
+                      message=f"Branch '{selected_branch}' is unavailable; this fork does not fall back to main.")
+        return
     reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
     if reason:
         detail = ("has never been pushed" if reason == "never-pushed"
@@ -515,7 +520,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
                       cache_path: Path | None = None, branch_config_path: Path | None = None,
                       force: bool = False,
                       passive: bool = False, git: str = "git") -> dict:
-    """Return a presentation-ready status. Omitted branch follows the current checkout.
+    """Return a status for the checkout, or the maintained fork's declared delivery.
 
     Only the default (running installation) may use HERMES_REVISION. An explicit
     target must never inherit the host process's embedded revision or stamp.
@@ -541,14 +546,18 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     co = _read_checkout(root, _installed_git(git), embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
-    selected_branch = branch or configured_branch or _checked_out_branch(co.current_branch, "main")
+    delivery = (resolve_source_target("main", repository=co.repository or OFFICIAL_REPOSITORY).branch
+                if channel == "main" else "main")
+    follow_delivery = channel == "main" and delivery != "main"
+    selected_branch = branch or configured_branch or (
+        delivery if follow_delivery else _checked_out_branch(co.current_branch, "main"))
     result.update(supported=True, currentSha=co.head, currentBranch=co.current_branch, dirty=co.dirty)
     if channel != "main":
         result["channel"] = channel
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 3,
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 4,
                 "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
@@ -565,8 +574,9 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     elif branch is None:
         source_target = _resolve_channel(result, channel, co, forward_only=forward_only)
         if source_target is not None and not source_target.commit:
-            # The record supplies a default, not permission to leave the user's branch.
-            selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
+            # Checking a maintained delivery does not switch the checked-out branch.
+            selected_branch = configured_branch or (source_target.branch if follow_delivery
+                                                    else _checked_out_branch(co.current_branch, source_target.branch))
     if "error" not in result and (source_target is None or source_target.branch is not None):
         # Only a Desktop-configured branch the caller did not override is healed.
         heal = branch_config_path and not branch and configured_branch == selected_branch

@@ -84,6 +84,67 @@ def saved(source):
     return channel_record(require_readable_config_before_write(source.home / "config.yaml"), source.root)
 
 
+def test_maintained_fork_check_and_plain_update_follow_ss(source, monkeypatch, capsys):
+    """The fork's main branch is not its reviewed downstream delivery branch."""
+    url = "https://github.com/ss-o/hermes-agent.git"
+    git(source.origin, "branch", "ss", source.commits[1])
+    git(source.root, "checkout", "-b", "ss", source.commits[0])
+    git(source.root, "config", "remote.origin.url", url)
+    git(source.root, "config", f"url.{source.origin}.insteadOf", url)
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], True))
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(deepcopy(request)))
+
+    update_cmd._cmd_update_check()
+    assert "origin/ss" in capsys.readouterr().out
+    assert git(source.root, "rev-parse", "HEAD") == source.commits[0]
+
+    update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--yes"]), False)
+    assert git(source.root, "branch", "--show-current") == "ss"
+    assert git(source.root, "rev-parse", "HEAD") == source.commits[1]
+    assert git(source.root, "rev-parse", "main") == source.commits[2]
+    assert completed[0]["branch"] == "ss"
+    assert saved(source) == {}
+
+
+@pytest.mark.parametrize("repository, expected", [
+    ("ss-o/hermes-agent", "ss"),
+    ("SS-O/Hermes-Agent", "ss"),
+    ("NousResearch/hermes-agent", "main"),
+    ("example/hermes-agent", "main"),
+    ("ss-o/hermes-agent-other", "main"),
+])
+def test_fork_source_branch_policy_is_repository_scoped(repository, expected):
+    target = source_releases.resolve_source_target("main", repository=repository)
+    assert target.branch == expected
+    assert target.commit is None
+
+
+def test_maintained_fork_explicit_branch_still_wins(source, monkeypatch):
+    url = "https://github.com/ss-o/hermes-agent.git"
+    git(source.origin, "branch", "ss", source.commits[1])
+    git(source.root, "config", "remote.origin.url", url)
+    git(source.root, "config", f"url.{source.origin}.insteadOf", url)
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(deepcopy(request)))
+    update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main", "--yes"]), False)
+    assert git(source.root, "rev-parse", "HEAD") == source.commits[2]
+    assert completed[0]["branch"] == "main"
+
+
+def test_missing_maintained_fork_branch_never_falls_back_to_main(source):
+    url = "https://github.com/ss-o/hermes-agent.git"
+    git(source.root, "config", "remote.origin.url", url)
+    git(source.root, "config", f"url.{source.origin}.insteadOf", url)
+    with pytest.raises(SystemExit) as check:
+        update_cmd._cmd_update_check()
+    assert check.value.code == 1
+    with pytest.raises(SystemExit) as apply:
+        update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--yes"]), False)
+    assert apply.value.code == 1
+    assert git(source.root, "rev-parse", "HEAD") == source.commits[0]
+
+
 def test_tagless_channel_check_apply_is_pinned_not_branch_tip(source, monkeypatch, capsys):
     name = "preview-unknown-at-build"
     set_install_channel(name, source.root)

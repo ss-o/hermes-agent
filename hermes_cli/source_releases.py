@@ -149,10 +149,13 @@ def _resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=N
     if channel == "stable":
         return _resolve_stable(repository, git_cmd, cwd)
     if channel == "main":
-        # main IS the git branch. No R2 record is read: none was ever published, and a
+        # This maintained fork delivers reviewed fixes through ss, not its upstream mirror.
+        # Explicit --branch requests bypass this subscription resolver.
+        branch = "ss" if repository.lower() == "ss-o/hermes-agent" else "main"
+        # No R2 record is read: none was ever published, and a
         # network that answers it with 403 instead of 404 (regional WAFs) must not stop
         # an install from following the branch it is on.
-        return SourceTarget(channel, channel, repository, branch="main")
+        return SourceTarget(channel, channel, repository, branch=branch)
     resolved = _resolve_channel(channel, repository)
     terminal = resolved.terminal
     if terminal["repository"].lower() != repository.lower():

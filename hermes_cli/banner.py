@@ -176,14 +176,26 @@ def _baked_banner_state() -> Optional[dict]:
 
 
 def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    from hermes_cli.source_releases import resolve_source_target
+
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (source_check._git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
-    if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
+    # Banner Git state is optional, including when only PM's Git is available.
+    git = source_check._quiet(lambda: source_check._installed_git("git")) or "git"
+    origin = source_check._git_stdout(["config", "--get", "remote.origin.url"], cwd=repo_dir, git=git)
+    if origin is None:
         return _baked_banner_state()
-    ahead = source_check._git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
+    match = source_check._GITHUB_ORIGIN.fullmatch(origin)
+    delivery = resolve_source_target("main", repository=match[1] if match else None).branch
+    upstream_ref = f"origin/{delivery}"
+    upstream, local = (source_check._git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir, git=git)
+                       for rev in (upstream_ref, "HEAD"))
+    if not upstream or not local:
+        # Live-git lookup failed (e.g. narrow clone without its delivery ref).
+        return _baked_banner_state()
+    count = source_check._git_stdout(["rev-list", "--count", f"{upstream_ref}..HEAD"], cwd=repo_dir, git=git)
+    ahead = source_check._quiet(lambda: int(count or "0")) or 0
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 
 

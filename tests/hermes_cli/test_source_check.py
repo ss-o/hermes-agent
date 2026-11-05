@@ -111,6 +111,171 @@ def installation(tmp_path, monkeypatch):
     thread.join()
 
 
+@pytest.mark.parametrize("selection", ["subscription", "explicit", "desktop"])
+def test_missing_maintained_delivery_branch_never_heals_to_main(installation, monkeypatch, selection):
+    from hermes_cli import source_check
+
+    _root, linked, home, _base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    remote = home / "remote.git"
+    git("remote", "set-url", "origin", "https://github.com/ss-o/hermes-agent.git")
+    git("checkout", "--detach", head, cwd=linked)
+    responses["/repos/ss-o/hermes-agent/commits/main"] = (200, head)
+    original = source_check._git_run
+
+    def local_advertisement(args, **kwargs):
+        # Keep GitHub identity and real HTTP probes, but advertise refs from a local bare origin.
+        if args[:1] == ["ls-remote"]:
+            args = [str(remote) if arg == "origin" else arg for arg in args]
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(source_check, "_git_run", local_advertisement)
+    branch_file = home / "desktop.json"
+    branch_file.write_text(json.dumps({"branch": "ss", "other": "preserved"}))
+    before = branch_file.read_bytes()
+    branch = "ss" if selection == "explicit" else None
+    desktop_file = branch_file if selection == "desktop" else None
+    cache = home / "passive-cache.json"
+    status = source_check.check_for_updates(install_root=linked, home=home, channel="main", cache_path=cache,
+                                           branch=branch, branch_config_path=desktop_file)
+
+    assert status["branch"] == "ss"
+    assert status.get("error")
+    assert status["reason"] == "branch-unavailable"
+    assert status.get("targetSha") is None
+    assert "/repos/ss-o/hermes-agent/commits/main" not in requests
+    assert branch_file.read_bytes() == before
+    assert git("rev-parse", "HEAD", cwd=linked) == head
+    assert git("branch", "--show-current", cwd=linked) == ""
+
+    # A pre-repair cache could report a successful fallback to main under this identity.
+    stale = json.loads(cache.read_text())
+    stale["identity"]["channelProtocol"] = 3
+    stale["status"].update(branch="main", targetSha=head, error=None, reason=None)
+    cache.write_text(json.dumps(stale))
+    again = source_check.check_for_updates(install_root=linked, home=home, channel="main", cache_path=cache,
+                                          branch=branch, branch_config_path=desktop_file)
+    assert again["branch"] == "ss"
+    assert again["reason"] == "branch-unavailable"
+
+
+@pytest.mark.parametrize("repository, expected_branch", [
+    ("ss-o/hermes-agent", "ss"),
+    ("SS-O/Hermes-Agent", "ss"),
+    ("fixture/fork", "feature/gui"),
+    ("ss-o/hermes-agent-other", "feature/gui"),
+])
+def test_passive_check_uses_maintained_delivery_without_leaving_checkout(installation, repository, expected_branch):
+    from hermes_cli.source_check import check_for_updates
+
+    _root, linked, home, _base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", f"https://github.com/{repository}.git")
+    git("commit", "--allow-empty", "-m", "published delivery")
+    target = git("rev-parse", "HEAD")
+    responses[f"/repos/{repository}/commits/ss"] = (200, target)
+    responses[f"/repos/{repository}/commits/feature%2Fgui"] = (200, head)
+    responses[f"/repos/{repository}/compare/{head}...{target}"] = (200, {"ahead_by": 1, "commits": []})
+
+    status = check_for_updates(install_root=linked, home=home, channel="main")
+
+    assert status["branch"] == expected_branch
+    assert status["targetSha"] == (target if expected_branch == "ss" else head)
+    assert status["behind"] == (1 if expected_branch == "ss" else 0)
+    assert status.get("error") is None
+    assert git("rev-parse", "HEAD", cwd=linked) == head
+    assert git("branch", "--show-current", cwd=linked) == "feature/gui"
+    assert requests == ([f"/repos/{repository}/commits/ss", f"/repos/{repository}/compare/{head}...{target}"]
+                        if expected_branch == "ss" else [f"/repos/{repository}/commits/feature%2Fgui"])
+
+
+@pytest.mark.parametrize("selection", ["explicit", "desktop", "explicit-over-desktop"])
+def test_maintained_passive_check_preserves_explicit_branch_choices(installation, selection):
+    from hermes_cli.source_check import check_for_updates
+
+    _root, linked, home, _base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/ss-o/hermes-agent.git")
+    responses["/repos/ss-o/hermes-agent/commits/feature%2Fgui"] = (200, head)
+    branch_file = home / "desktop.json"
+    branch_file.write_text(json.dumps({"branch": "ss" if selection == "explicit-over-desktop" else "feature/gui"}))
+    before = branch_file.read_bytes()
+    for _ in range(2):
+        status = check_for_updates(install_root=linked, home=home, channel="main",
+                                   branch="feature/gui" if selection != "desktop" else None,
+                                   branch_config_path=branch_file if selection != "explicit" else None)
+        assert status["branch"] == "feature/gui"
+        assert status["targetSha"] == head
+        assert status["behind"] == 0
+        assert status.get("error") is None
+    assert requests == ["/repos/ss-o/hermes-agent/commits/feature%2Fgui"]
+    assert branch_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("repository, delivery", [
+    ("ss-o/hermes-agent", "ss"), ("NousResearch/hermes-agent", "main"), ("fixture/fork", "main"),
+])
+def test_banner_compares_the_delivery_ref_instead_of_a_stale_mirror(installation, repository, delivery):
+    from hermes_cli.banner import get_git_banner_state
+
+    _root, linked, _home, base, head, _responses, requests, git = installation
+    git("remote", "set-url", "origin", f"https://github.com/{repository}.git")
+    git("update-ref", "refs/remotes/origin/main", base)
+    git("update-ref", "refs/remotes/origin/ss", head)
+
+    state = get_git_banner_state(linked)
+
+    assert state == {"upstream": head[:8] if delivery == "ss" else base[:8],
+                     "local": head[:8], "ahead": 0 if delivery == "ss" else 1}
+    if delivery == "ss":
+        git("update-ref", "-d", "refs/remotes/origin/main")
+        assert get_git_banner_state(linked) == state
+    assert requests == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "origin-timeout"])
+def test_banner_git_failures_keep_the_baked_fallback(installation, monkeypatch, failure):
+    from hermes_cli import banner
+
+    _root, linked, _home, base, head, _responses, requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/ss-o/hermes-agent.git")
+    git("update-ref", "refs/remotes/origin/main", base)
+    git("update-ref", "refs/remotes/origin/ss", head)
+    baked = {"upstream": "01234567", "local": "01234567", "ahead": 0}
+    monkeypatch.setattr(banner, "_baked_banner_state", lambda: baked)
+
+    original_run = subprocess.run
+
+    def unavailable(args, **kwargs):
+        if failure == "origin-timeout" and args[1:4] != ["config", "--get", "remote.origin.url"]:
+            return original_run(args, **kwargs)
+        if failure == "missing":
+            raise FileNotFoundError("Git is unavailable")
+        raise subprocess.TimeoutExpired(args, 5)
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    assert banner.get_git_banner_state(linked) == baked
+    assert requests == []
+
+
+@pytest.mark.parametrize("ahead", [0, 1])
+def test_banner_uses_the_updaters_git_when_git_is_off_path(installation, monkeypatch, tmp_path, ahead):
+    from hermes_cli import banner, update_pause_record
+
+    _root, linked, _home, base, head, _responses, requests, git = installation
+    git("remote", "set-url", "origin", "https://github.com/ss-o/hermes-agent.git")
+    git("update-ref", "refs/remotes/origin/main", base)
+    delivery = base if ahead else head
+    git("update-ref", "refs/remotes/origin/ss", delivery)
+    store_git = shutil.which("git")
+    assert store_git is not None
+    empty = tmp_path / "no-banner-git-on-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(update_pause_record, "_git_executable", lambda: store_git)
+
+    assert banner.get_git_banner_state(linked) == {"upstream": delivery[:8], "local": head[:8], "ahead": ahead}
+    assert requests == []
+
+
 def test_target_worktree_owns_admission_and_fork_comparison(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
 

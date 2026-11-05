@@ -37,6 +37,13 @@ only from one release to the next, never commit by commit. Forks and mirrors kee
 tracking their `main` branch. The update prepares dependencies through PM and
 reports configuration changes and process-restart results.
 
+In the maintained `ss-o/hermes-agent` fork, the `main` source channel instead
+tracks the reviewed `ss` branch on that fork's `origin`. Plain `hermes update`
+and `hermes update --check` select the same branch. This exception does not
+change official installs or other forks. An explicit `--branch` still wins;
+selecting a release channel or another branch can leave the downstream fixes.
+See the fork's root `FORK.md` for maintenance, qualification and adoption gates.
+
 ```bash
 hermes update --set-channel main     # follow every commit on main instead
 hermes update --set-channel stable   # back to releases only
