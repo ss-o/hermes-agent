@@ -11,6 +11,7 @@ import { $inputSelection } from '../app/inputSelectionStore.js'
 import type { AppLayoutProps, BusyInputMode } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { $voicePartial } from '../app/voicePartialStore.js'
@@ -608,6 +609,13 @@ const StatusRulePane = memo(function StatusRulePane({
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top'; nativeMode: boolean }) {
   const ui = useStore($uiState)
 
+  // Only the live tool roster supplies names, never reasoning text or a past tool.
+  const activityLabel = useTurnSelector(state => {
+    const first = state.tools[0]
+
+    return first ? `${first.name}${state.tools.length > 1 ? ` +${state.tools.length - 1}` : ''}` : ''
+  })
+
   if (ui.statusBar === 'off' || (nativeMode ? at !== 'top' : ui.statusBar !== at)) {
     return null
   }
@@ -615,6 +623,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        activityLabel={activityLabel}
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
@@ -640,6 +649,7 @@ const StatusRulePane = memo(function StatusRulePane({
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}
         voiceLabel={status.voiceLabel}
+        yolo={ui.info?.yolo}
       />
     </Box>
   )
