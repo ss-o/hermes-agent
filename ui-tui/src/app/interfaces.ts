@@ -391,6 +391,9 @@ export interface UiState {
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
+  // `display.tools_recent` — newest tool rows kept open while the tools
+  // section is collapsed (0 = off).
+  toolsRecent: number
   usage: Usage
 }
 

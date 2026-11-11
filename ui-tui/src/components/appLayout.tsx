@@ -17,6 +17,8 @@ import { usePet } from '../app/usePet.js'
 import { $voicePartial } from '../app/voicePartialStore.js'
 import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { sectionMode } from '../domain/details.js'
+import { msgToolGroups, recentToolBudgets } from '../domain/recentTools.js'
 import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
@@ -45,7 +47,7 @@ import { MessageLine } from './messageLine.js'
 import { PasteHint } from './pasteSections.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { RewindFocusScroller, useBacktrackHint, useRewindFocusIndex } from './rewindFocus.js'
-import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { LiveTodoPanel, liveToolTotal, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
@@ -208,6 +210,30 @@ const TranscriptPane = memo(function TranscriptPane({
 
   const rewindFocusIdx = useRewindFocusIndex(transcript.historyItems)
 
+  // `display.tools_recent`: while tools are collapsed, the newest N tool rows
+  // of the session stay open. The live area holds the newest rows, so settled
+  // history gets what it leaves of the window. The selector returns a number,
+  // so a streaming token re-renders this pane only when the live count moves.
+  const recentLimit =
+    ui.toolsRecent > 0 &&
+    sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) === 'collapsed'
+      ? ui.toolsRecent
+      : undefined
+
+  const liveTools = useTurnSelector(state =>
+    recentLimit === undefined ? 0 : liveToolTotal(state, progress.showProgressArea)
+  )
+
+  const historyToolCounts = useMemo(
+    () => transcript.virtualRows.map(row => msgToolGroups(row.msg)),
+    [transcript.virtualRows]
+  )
+
+  const historyToolBudgets = useMemo(
+    () => (recentLimit === undefined ? null : recentToolBudgets(historyToolCounts, recentLimit - liveTools)),
+    [historyToolCounts, liveTools, recentLimit]
+  )
+
   const clearBlankSelection = (e: { cellIsBlank?: boolean }) => {
     cancelBacktrackPrime()
 
@@ -257,6 +283,9 @@ const TranscriptPane = memo(function TranscriptPane({
                 detailsMode: ui.detailsMode,
                 sections: ui.sections
               })}
+              recentTools={
+                historyToolBudgets && historyToolCounts[row.index] ? historyToolBudgets[row.index] : undefined
+              }
               sections={ui.sections}
               selected={!nativeMode && row.index === rewindFocusIdx}
               t={ui.theme}
@@ -277,6 +306,7 @@ const TranscriptPane = memo(function TranscriptPane({
         detailsModeCommandOverride={ui.detailsModeCommandOverride}
         prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
         progress={progress}
+        recentLimit={recentLimit}
         sections={ui.sections}
       />
 

@@ -65,7 +65,8 @@ export const chatBitsEn = {
       approxTokens: (count: string) => `~${count} tokens`,
       approxTotal: (count: string) => `~${count} total`,
       agentsToMonitor: '(/agents to monitor)',
-      agentsHint: '(/agents)'
+      agentsHint: '(/agents)',
+      earlierToolCalls: (count: number) => `${count} earlier`
     },
     messageLine: {
       emptyToolResult: '(empty tool result)',

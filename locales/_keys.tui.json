@@ -196,6 +196,7 @@
   "chatBits.thinking.approxTotal",
   "chatBits.thinking.argsHeader",
   "chatBits.thinking.drafting",
+  "chatBits.thinking.earlierToolCalls",
   "chatBits.thinking.progress",
   "chatBits.thinking.spawnTree",
   "chatBits.thinking.spawned",

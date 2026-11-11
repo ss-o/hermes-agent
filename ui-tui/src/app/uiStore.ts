@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
+import { DEFAULT_TOOLS_RECENT } from '../domain/recentTools.js'
 import { ZERO } from '../domain/usage.js'
 import { t } from '../i18n/runtime.js'
 import { bootTheme } from '../lib/themeBoot.js'
@@ -42,6 +43,7 @@ const buildUiState = (): UiState => ({
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,
+  toolsRecent: DEFAULT_TOOLS_RECENT,
   usage: ZERO
 })
 

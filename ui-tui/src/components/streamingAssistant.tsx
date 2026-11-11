@@ -2,9 +2,10 @@ import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
-import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
+import { toggleTodoCollapsed, type TurnState, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
+import { msgToolGroups, recentToolBudgets } from '../domain/recentTools.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -21,38 +22,21 @@ interface LiveBlock {
   tools?: ActiveTool[]
 }
 
-export const StreamingAssistant = memo(function StreamingAssistant({
-  cols,
-  compact,
-  detailsMode,
-  detailsModeCommandOverride,
-  prevMsg,
-  progress,
-  sections
-}: StreamingAssistantProps) {
-  const ui = useStore($uiState)
-  const streamSegments = useTurnSelector(state => state.streamSegments)
-  const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
-  const streaming = useTurnSelector(state => state.streaming)
-  const activeTools = useTurnSelector(state => state.tools)
-  const showStreamingArea = Boolean(streaming)
+type LiveState = Pick<TurnState, 'streamPendingTools' | 'streamSegments' | 'streaming' | 'tools'>
 
-  if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
-    return null
-  }
-
-  // Flatten the live area into one ordered list so each block's leading gap
-  // can be derived from the block directly above it — including the boundary
-  // back into settled history (prevMsg). Tracking the predecessor rather than
-  // the live text is what keeps the streaming block from jumping when it
-  // flushes into a settled segment.
+// Flatten the live area into one ordered list so each block's leading gap
+// can be derived from the block directly above it — including the boundary
+// back into settled history (prevMsg). Tracking the predecessor rather than
+// the live text is what keeps the streaming block from jumping when it
+// flushes into a settled segment.
+const buildLiveBlocks = ({ streamPendingTools, streamSegments, streaming, tools }: LiveState): LiveBlock[] => {
   const blocks: LiveBlock[] = groupedSegments(streamSegments).map((msg, i) => ({ key: `seg:${i}`, msg }))
 
-  if (activeTools.length) {
-    blocks.push({ key: 'active-tools', msg: { kind: 'trail', role: 'system', text: '' }, tools: activeTools })
+  if (tools.length) {
+    blocks.push({ key: 'active-tools', msg: { kind: 'trail', role: 'system', text: '' }, tools })
   }
 
-  if (showStreamingArea) {
+  if (streaming) {
     blocks.push({
       isStreaming: true,
       key: 'streaming',
@@ -62,12 +46,51 @@ export const StreamingAssistant = memo(function StreamingAssistant({
     blocks.push({ key: 'pending-tools', msg: { kind: 'trail', role: 'system', text: '', tools: streamPendingTools } })
   }
 
+  return blocks
+}
+
+const blockToolGroups = (block: LiveBlock) => msgToolGroups(block.msg) + (block.tools?.length ?? 0)
+
+const liveAreaShown = (showProgressArea: boolean, { streaming, tools }: LiveState) =>
+  showProgressArea || Boolean(streaming) || tools.length > 0
+
+/** Tool rows the live area draws: the newest rows of the session, ahead of settled history. */
+export const liveToolTotal = (state: LiveState, showProgressArea: boolean): number =>
+  liveAreaShown(showProgressArea, state)
+    ? buildLiveBlocks(state).reduce((sum, block) => sum + blockToolGroups(block), 0)
+    : 0
+
+export const StreamingAssistant = memo(function StreamingAssistant({
+  cols,
+  compact,
+  detailsMode,
+  detailsModeCommandOverride,
+  prevMsg,
+  progress,
+  recentLimit,
+  sections
+}: StreamingAssistantProps) {
+  const ui = useStore($uiState)
+  const streamSegments = useTurnSelector(state => state.streamSegments)
+  const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
+  const streaming = useTurnSelector(state => state.streaming)
+  const activeTools = useTurnSelector(state => state.tools)
+  const liveState = { streamPendingTools, streamSegments, streaming, tools: activeTools }
+
+  if (!liveAreaShown(progress.showProgressArea, liveState)) {
+    return null
+  }
+
+  const blocks = buildLiveBlocks(liveState)
+  const toolCounts = blocks.map(blockToolGroups)
+  const budgets = recentLimit === undefined ? null : recentToolBudgets(toolCounts, recentLimit)
+
   const detailsCtx = { commandOverride: detailsModeCommandOverride, detailsMode, sections }
   let prev = prevMsg
 
   return (
     <>
-      {blocks.map(block => {
+      {blocks.map((block, i) => {
         const node = (
           <MessageLine
             cols={cols}
@@ -80,6 +103,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             msg={block.msg}
             prev={prev}
             reasoningActive={block.msg.isLiveReasoning === true}
+            recentTools={budgets && toolCounts[i] ? budgets[i] : undefined}
             sections={sections}
             t={ui.theme}
             {...(block.tools ? { tools: block.tools } : {})}
@@ -116,5 +140,7 @@ interface StreamingAssistantProps {
   detailsModeCommandOverride: boolean
   prevMsg?: Msg
   progress: AppLayoutProgressProps
+  /** `display.tools_recent` while tools are collapsed; undefined = window off. */
+  recentLimit?: number
   sections?: SectionVisibility
 }

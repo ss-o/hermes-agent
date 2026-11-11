@@ -5,6 +5,7 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
+import { toolGroupCount, toolsPanelView } from '../domain/recentTools.js'
 import { useT } from '../i18n/useT.js'
 import {
   buildSubagentTree,
@@ -697,6 +698,7 @@ export const ToolTrail = memo(function ToolTrail({
   reasoningAlwaysVisible = false,
   reasoningTokens,
   reasoningStreaming = false,
+  recentTools,
   sections,
   subagents = [],
   t,
@@ -718,6 +720,9 @@ export const ToolTrail = memo(function ToolTrail({
   reasoningAlwaysVisible?: boolean
   reasoningTokens?: number
   reasoningStreaming?: boolean
+  // `display.tools_recent`: how many of this panel's newest tool rows fall in
+  // the session-wide window. Undefined leaves the section mode in charge.
+  recentTools?: number
   sections?: SectionVisibility
   subagents?: SubagentProgress[]
   t: Theme
@@ -757,19 +762,31 @@ export const ToolTrail = memo(function ToolTrail({
   // sticks (see the no-OR-at-effect-time warning above, #14968).
   const [openThinking, setOpenThinking] = useState(thinkingDefaultExpanded || reasoningAlwaysVisible)
   const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
+  // The user's own Tool calls chevron choice under the recent-tools window;
+  // null until they click, and cleared again when /details changes modes.
+  const [toolsManual, setToolsManual] = useState<boolean | null>(null)
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
   const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
 
+  // The window counts rows the same way the transcript does (toolGroupCount),
+  // so the boundary panel folds exactly the rows the session total excludes.
+  const toolsView =
+    recentTools === undefined
+      ? { hidden: 0, open: openTools }
+      : toolsPanelView(toolGroupCount(trail, tools.length), recentTools, toolsManual)
+
+  const toolsOpen = toolsView.open
+
   useEffect(() => {
-    if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
+    if (!tools.length || (visible.tools !== 'expanded' && !toolsOpen)) {
       return
     }
 
     const id = setInterval(() => setNow(Date.now()), 500)
 
     return () => clearInterval(id)
-  }, [openTools, tools.length, visible.tools])
+  }, [toolsOpen, tools.length, visible.tools])
 
   // Effects run after the FIRST render too, not just on later updates — so
   // this re-sync was clobbering the reasoningAlwaysVisible mount value above
@@ -788,6 +805,7 @@ export const ToolTrail = memo(function ToolTrail({
 
     setOpenThinking(thinkingDefaultExpanded)
     setOpenTools(visible.tools === 'expanded')
+    setToolsManual(null)
     setOpenSubagents(visible.subagents === 'expanded')
     setOpenMeta(visible.activity === 'expanded')
   }, [thinkingDefaultExpanded, visible])
@@ -1008,6 +1026,7 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (visible.tools !== 'hidden') {
       setOpenTools(true)
+      setToolsManual(true)
     }
 
     if (visible.subagents !== 'hidden') {
@@ -1098,6 +1117,8 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   if (hasTools && visible.tools !== 'hidden') {
+    const shownGroups = toolsView.hidden > 0 ? groups.slice(toolsView.hidden) : groups
+
     panels.push({
       header: (
         <Chevron
@@ -1105,22 +1126,40 @@ export const ToolTrail = memo(function ToolTrail({
           onClick={shift => {
             if (shift) {
               expandAll()
-            } else {
+            } else if (recentTools === undefined) {
               setOpenTools(v => !v)
+            } else {
+              setToolsManual(!toolsOpen)
             }
           }}
-          open={openTools}
+          open={toolsOpen}
           suffix={toolTokensLabel}
           t={t}
           title={T.toolCalls}
         />
       ),
       key: 'tools',
-      open: openTools,
+      open: toolsOpen,
       render: rails => (
         <Box flexDirection="column">
-          {groups.map((group, index) => {
-            const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
+          {toolsView.hidden > 0 ? (
+            <Box onClick={() => setToolsManual(true)}>
+              <TreeTextRow
+                branch="mid"
+                color={t.color.muted}
+                content={
+                  <>
+                    <Text color={t.color.accent}>▸ </Text>
+                    {T.earlierToolCalls(toolsView.hidden)}
+                  </>
+                }
+                rails={rails}
+                t={t}
+              />
+            </Box>
+          ) : null}
+          {shownGroups.map((group, index) => {
+            const branch: TreeBranch = index === shownGroups.length - 1 ? 'last' : 'mid'
             const childRails = nextTreeRails(rails, branch)
             const hasInlineSubagents = inlineDelegateKey === group.key
             // Surface the /agents hint the moment a delegate group appears —

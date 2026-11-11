@@ -56,6 +56,7 @@ export const MessageLine = memo(function MessageLine({
   msg,
   prev,
   reasoningActive = false,
+  recentTools,
   sections,
   selected = false,
   t,
@@ -110,6 +111,7 @@ export const MessageLine = memo(function MessageLine({
           reasoningActive={reasoningActive}
           reasoningAlwaysVisible={msg.isMoaReference}
           reasoningTokens={msg.thinkingTokens}
+          recentTools={recentTools}
           sections={sections}
           t={t}
           tools={tools}
@@ -289,6 +291,7 @@ export const MessageLine = memo(function MessageLine({
             reasoning={thinking}
             reasoningActive={reasoningActive}
             reasoningTokens={msg.thinkingTokens}
+            recentTools={recentTools}
             sections={sections}
             t={t}
             toolTokens={msg.toolTokens}
@@ -394,6 +397,8 @@ interface MessageLineProps {
   // the transcript or when spacing is irrelevant.
   prev?: Msg
   reasoningActive?: boolean
+  /** This block's share of the `display.tools_recent` window; undefined = off. */
+  recentTools?: number
   sections?: SectionVisibility
   /** Backtrack browsing has this prompt selected: drawn in reverse video. */
   selected?: boolean

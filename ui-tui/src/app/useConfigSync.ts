@@ -3,6 +3,7 @@ import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from 
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
+import { parseToolsRecent } from '../domain/recentTools.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
@@ -368,7 +369,8 @@ export const applyDisplay = (
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
-    timestamps: d.timestamps === true
+    timestamps: d.timestamps === true,
+    toolsRecent: parseToolsRecent(d.tools_recent)
   })
 }
 
