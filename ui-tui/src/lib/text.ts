@@ -280,6 +280,20 @@ export const splitToolDuration = (call: string) => {
   return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
+/** `Name("preview")` → name + arguments; a bridged `emoji text  preview` label splits at its double space. */
+export const splitToolCall = (call: string) => {
+  const paren = call.indexOf('(')
+  const gap = call.indexOf('  ')
+
+  if (gap > 0 && (paren < 0 || gap < paren)) {
+    return { args: call.slice(gap), name: call.slice(0, gap) }
+  }
+
+  return paren > 0 && call.endsWith(')')
+    ? { args: call.slice(paren), name: call.slice(0, paren) }
+    : { args: '', name: call }
+}
+
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
 
 export const sameToolTrailGroup = (label: string, entry: string) =>

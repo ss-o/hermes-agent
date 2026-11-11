@@ -25,6 +25,7 @@ import {
   formatToolLabels,
   parseToolTrailResultLine,
   pick,
+  splitToolCall,
   splitToolDuration,
   thinkingPreview,
   toolTrailLabel
@@ -250,12 +251,14 @@ function Chevron({
 }) {
   const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
 
+  // Muted already marks a header as secondary; adding faint on top made it
+  // unreadable on dark skins. The count takes the accent so it scans.
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
-      <Text color={color} dim={tone === 'dim'}>
+      <Text color={color}>
         <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
         {title}
-        {typeof count === 'number' ? ` (${count})` : ''}
+        {typeof count === 'number' ? <Text color={t.color.accent}>{` (${count})`}</Text> : ''}
         {suffix ? (
           <Text color={t.color.statusFg} dim>
             {'  '}
@@ -685,6 +688,8 @@ interface Group {
   details: DetailRow[]
   key: string
   label: string
+  // Outcome, shown by the row marker colour: finished ok, failed, or still running/drafting.
+  status: 'error' | 'ok' | 'running'
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -864,14 +869,16 @@ export const ToolTrail = memo(function ToolTrail({
         content: parsed.call,
         details: [],
         key: `tr-${i}`,
-        label: parsed.call
+        label: parsed.call,
+        status: parsed.mark === '✗' ? 'error' : 'ok'
       })
 
       if (parsed.detail) {
+        // Result previews read as secondary text: muted, not also faint,
+        // which washed them out to near-background on dark skins.
         pushDetail({
           color: parsed.mark === '✗' ? t.color.error : t.color.muted,
           content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
           key: `tr-${i}-d`
         })
       }
@@ -887,7 +894,8 @@ export const ToolTrail = memo(function ToolTrail({
         content: label,
         details: [{ color: t.color.muted, content: T.drafting, dimColor: true, key: `tr-${i}-d` }],
         key: `tr-${i}`,
-        label
+        label,
+        status: 'running'
       })
 
       continue
@@ -914,6 +922,20 @@ export const ToolTrail = memo(function ToolTrail({
     meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
   }
 
+  // A call reads as `Name(args)`: the name in the label colour, its arguments
+  // muted, so the tool stands out from what it was given. A failed call keeps
+  // the whole label in the error colour.
+  const callText = (call: string, failed = false) => {
+    const { args, name } = splitToolCall(call)
+
+    return (
+      <>
+        <Text color={failed ? t.color.error : t.color.label}>{name}</Text>
+        {args ? <Text color={failed ? t.color.error : t.color.muted}>{args}</Text> : null}
+      </>
+    )
+  }
+
   for (const tool of tools) {
     // A bridged call names its inner calls; anything else is still name + preview.
     const label = tool.labels?.length ? formatToolLabels(tool.labels) : formatToolCall(tool.name, tool.context || '')
@@ -922,6 +944,7 @@ export const ToolTrail = memo(function ToolTrail({
       color: t.color.text,
       key: tool.id,
       label,
+      status: 'running',
       details: tool.verboseArgs
         ? [
             {
@@ -934,7 +957,7 @@ export const ToolTrail = memo(function ToolTrail({
         : [],
       content: (
         <>
-          <Spinner color={t.color.tool} variant="tool" /> {label}
+          <Spinner color={t.color.tool} variant="tool" /> {callText(label)}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -970,19 +993,26 @@ export const ToolTrail = memo(function ToolTrail({
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
-    const { duration, label } = splitToolDuration(String(group.content))
+    // Live rows already carry their spinner and styled call.
+    if (typeof group.content !== 'string') {
+      return group.content
+    }
 
-    return duration ? (
+    const { duration, label } = splitToolDuration(group.content)
+
+    return (
       <>
-        {label}
-        <Text color={t.color.statusFg} dim>
-          {duration}
-        </Text>
+        {callText(label, group.status === 'error')}
+        {duration ? (
+          <Text color={t.color.statusFg} dim>
+            {duration}
+          </Text>
+        ) : null}
       </>
-    ) : (
-      group.content
     )
   }
+
+  const markerColor: Record<Group['status'], string> = { error: t.color.error, ok: t.color.ok, running: t.color.tool }
 
   // ── Backstop: floating alerts when every panel is hidden ─────────
   //
@@ -1080,16 +1110,14 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
         >
-          <Text color={t.color.muted} dim={!thinkingLive}>
+          <Text color={t.color.muted}>
             <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.text}>
                 {T.thinking}
               </Text>
             ) : (
-              <Text color={t.color.muted} dim>
-                {T.thinking}
-              </Text>
+              <Text color={t.color.muted}>{T.thinking}</Text>
             )}
             {thinkingTokensLabel ? (
               <Text color={t.color.statusFg} dim>
@@ -1174,7 +1202,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.tool}>● </Text>
+                      <Text color={markerColor[group.status]}>● </Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>
