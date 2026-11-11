@@ -860,14 +860,15 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     }
 
     if (baseButton !== 0) {
+      // Motion reports are not fresh clicks, even when no text is selected.
+      if ((m.button & 0x20) !== 0) {
+        return
+      }
+
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
 
       if (baseButton === 2 && hasSelection(sel)) {
-        if ((m.button & 0x20) !== 0) {
-          return
-        }
-
         if (!app.props.getSelectedText()) {
           return
         }
