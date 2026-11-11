@@ -19,18 +19,17 @@ export const chromeEn = {
     fast: 'fast'
   },
   composer: {
-    interruptHint: 'Ctrl+C to interrupt…',
     pasteExpandHint: 'Ctrl+P expand paste to read / edit',
     pasteCollapseHint: 'editing pasted text · Ctrl+P collapse',
-    placeholders: {
-      ask: 'Ask me anything…',
-      explain: 'Try "explain this codebase"',
-      test: 'Try "write a test for…"',
-      refactor: 'Try "refactor the auth module"',
-      help: 'Try "/help" for commands',
-      lint: 'Try "fix the lint errors"',
-      config: 'Try "how does the config loader work?"'
-    }
+    interruptEnterHint: 'Enter interrupts and sends · Ctrl+C stops',
+    queueHint: 'Enter queues next message · Ctrl+C stops',
+    steerHint: 'Enter steers current turn · Ctrl+C stops',
+    interruptShortHint: 'Enter: interrupt · Ctrl+C: stop',
+    queueShortHint: 'Enter: queue · Ctrl+C: stop',
+    steerShortHint: 'Enter: steer · Ctrl+C: stop',
+    stopHint: 'Ctrl+C: stop',
+    idleHint: (editorKey: string) => `/ commands · @ files · ? help · ${editorKey} editor`,
+    idleShortHint: '/ commands · @ files · ? help'
   },
   hints: {
     copySelection: 'copy selection',

@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
@@ -9,14 +10,18 @@ import { GatewayProvider } from '../app/gatewayContext.js'
 import type { AppLayoutProps, OverlayState, UiState } from '../app/interfaces.js'
 import { patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { $voicePartial } from '../app/voicePartialStore.js'
 import { StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
+import { applyLocale, resetLocale } from '../i18n/runtime.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac } from '../lib/platform.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type StatusRuleProps = React.ComponentProps<typeof StatusRule>
 type IntervalSpy = ReturnType<typeof vi.spyOn<typeof globalThis, 'setInterval'>>
+
+const { load } = createRequire(import.meta.url)('js-yaml') as { load: (text: string) => unknown }
 
 // Fixed wall clock so the rendered elapsed read-outs are exact strings rather
 // than whatever the machine's clock happens to produce mid-test.
@@ -34,14 +39,14 @@ const mounted: Array<() => void> = []
  * Teardown is registered up front so a failing assertion still unmounts the
  * tree — a leaked instance would keep re-arming timers into the next test.
  */
-const mountTree = (tree: React.ReactElement, { interactive = false } = {}) => {
+const mountTree = (tree: React.ReactElement, { interactive = false, columns = 120 } = {}) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
 
   let output = ''
 
-  Object.assign(stdout, { columns: 120, isTTY: false, rows: 20 })
+  Object.assign(stdout, { columns, isTTY: false, rows: 20 })
   // PromptZone's prompts call `useInput`, which needs raw mode; without it Ink
   // swaps the whole tree for an error panel and stops updating.
   Object.assign(
@@ -188,15 +193,19 @@ const layoutProps: AppLayoutProps = {
 }
 
 /** Mount the real AppLayout with the given overlay + ui state applied first. */
-const mountLayout = (overlay: Partial<OverlayState> = {}, ui: Partial<UiState> = {}) => {
+const mountLayout = (
+  overlay: Partial<OverlayState> = {},
+  ui: Partial<UiState> = {},
+  composer: Partial<AppLayoutProps['composer']> = {}
+) => {
   patchUiState({ sessionTitle: 'test', sid: 'sid-1', status: 'ready', ...ui })
   patchOverlayState(overlay)
 
   return mountTree(
     <GatewayProvider value={gatewayStub}>
-      <AppLayout {...layoutProps} />
+      <AppLayout {...layoutProps} composer={{ ...layoutProps.composer, ...composer }} />
     </GatewayProvider>,
-    { interactive: true }
+    { interactive: true, columns: composer.cols ?? 120 }
   )
 }
 
@@ -208,8 +217,10 @@ let intervalSpy: IntervalSpy
 let nowSpy: ReturnType<typeof vi.spyOn<typeof Date, 'now'>>
 
 beforeEach(() => {
+  resetLocale()
   resetOverlayState()
   resetUiState()
+  $voicePartial.set('')
   nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0)
   intervalSpy = vi.spyOn(globalThis, 'setInterval')
 })
@@ -448,5 +459,91 @@ describe('AppLayout status-rule visibility', () => {
     await flush()
 
     expect(oneSecondTimers(intervalSpy)).toBe(2)
+  })
+})
+
+describe('composer action hints', () => {
+  it('keeps the stop action complete when a profile name leaves too little room for both actions', async () => {
+    const layout = mountLayout(
+      {},
+      {
+        busy: true,
+        busyInputMode: 'interrupt',
+        info: { model: 'test', tools: {}, skills: {}, profile_name: 'research' }
+      },
+      { cols: 40 }
+    )
+
+    await flush()
+
+    expect(layout.output()).toContain('Ctrl+C: stop')
+    expect(layout.output()).not.toContain('Enter: interrupt')
+  })
+
+  it.each(['queue', 'steer', 'interrupt'] as const)(
+    'keeps both %s and stop actions complete at 40 columns',
+    async busyInputMode => {
+      const layout = mountLayout({}, { busy: true, busyInputMode }, { cols: 40 })
+
+      await flush()
+
+      expect(layout.output()).toContain(`Enter: ${busyInputMode} · Ctrl+C: stop`)
+    }
+  )
+
+  it('does not let an old translated interrupt key replace the new Enter guidance', async () => {
+    applyLocale('de', {
+      lang: 'de',
+      surface: 'tui',
+      messages: { 'composer.interruptHint': 'Ctrl+C zum Unterbrechen…' }
+    })
+    const layout = mountLayout({}, { busy: true, busyInputMode: 'interrupt' })
+
+    await flush()
+
+    expect(layout.output()).toContain('Enter interrupts and sends')
+  })
+
+  it.each([
+    ['queue', 'Enter queues next message'],
+    ['steer', 'Enter steers current turn'],
+    ['interrupt', 'Enter interrupts and sends']
+  ] as const)('describes Enter in %s mode on fresh and existing transcripts', async (busyInputMode, hint) => {
+    for (const empty of [true, false]) {
+      const layout = mountLayout({}, { busy: true, busyInputMode }, { empty })
+
+      await flush()
+
+      expect(layout.output()).toContain(hint)
+      expect(layout.output()).toContain('Ctrl+C stops')
+      mounted.pop()!()
+    }
+  })
+
+  it('shows command, file, help and editor affordances when idle', async () => {
+    const layout = mountLayout({}, { busy: false }, { empty: false })
+
+    await flush()
+
+    expect(layout.output()).toContain(`/ commands · @ files · ? help · ${isMac ? 'Cmd' : 'Ctrl'}+G editor`)
+  })
+
+  it('prioritizes live transcription without replacing a typed draft', async () => {
+    $voicePartial.set('live dictation')
+
+    const layout = mountLayout({}, { busy: true, busyInputMode: 'queue' })
+
+    await flush()
+
+    expect(layout.output()).toContain('live dictation')
+    expect(layout.output()).not.toContain('Enter queues')
+    mounted.pop()!()
+
+    const draft = mountLayout({}, { busy: true }, { input: 'my draft' })
+
+    await flush()
+
+    expect(draft.output()).toContain('my draft')
+    expect(draft.output()).not.toContain('live dictation')
   })
 })

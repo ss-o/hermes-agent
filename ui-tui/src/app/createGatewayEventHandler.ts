@@ -27,7 +27,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall } from '../lib/text.js'
-import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
+import { bootSeededPin, bootTheme, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress } from '../types.js'
 
@@ -115,8 +115,8 @@ export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined)
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
-// The last gateway skin, kept so the theme can be re-derived when the OSC-11
-// background answer arrives after (or without) gateway.ready.
+// The last gateway skin, kept so later terminal detection can re-derive it.
+// Before readiness a cached palette waits; a cold start adapts immediately.
 let lastSkin: GatewaySkin | null = null
 
 const themeForSkin = (s: GatewaySkin) => {
@@ -224,6 +224,12 @@ const applySkin = (s: GatewaySkin) => {
 /** Re-derive the theme from current detection signals (env overrides, cached
  *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
 export function reapplyTheme(): void {
+  // Detection can beat the gateway handshake. Keep the first-frame palette
+  // until its skin arrives rather than replacing a cached skin with gold.
+  if (!lastSkin && bootTheme) {
+    return
+  }
+
   const theme = lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground()
 
   commitTheme(theme)
@@ -1063,9 +1069,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
   const handleReady = (skin?: GatewaySkin) => {
-    if (skin) {
-      applySkin(skin)
-    }
+    applySkin(skin ?? {})
 
     reportStartupLatency(gw)
 

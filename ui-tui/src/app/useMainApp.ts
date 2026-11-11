@@ -1606,7 +1606,9 @@ export function useMainApp(gw: GatewayClient) {
         ? i18n.session.main.voiceRec
         : voiceProcessing
           ? i18n.session.main.voiceStt
-          : `${voiceEnabled ? i18n.session.main.voiceOn : i18n.session.main.voiceOff}${voiceTts ? i18n.session.main.voiceTtsSuffix : ''}`
+          : voiceEnabled || voiceTts
+            ? `${voiceEnabled ? i18n.session.main.voiceOn : i18n.session.main.voiceOff}${voiceTts ? i18n.session.main.voiceTtsSuffix : ''}`
+            : ''
     }),
     [
       cwd,
