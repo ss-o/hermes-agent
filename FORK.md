@@ -6,21 +6,39 @@ stays the base. Keep this file on `ss`, outside upstream PRs.
 
 ## Status and patch ledger
 
-Candidate refreshed 2026-11-04. Base: `NousResearch/hermes-agent` at `71736c9f32`.
-The candidate carries the existing skill-gate and TUI patches in source, rather
-than depending on a separate renderer overlay. Publication does not activate
-the fork in an existing installation. Live adoption and restarts remain separate gates.
+Candidate refreshed 2026-11-17. Base: `NousResearch/hermes-agent` at `707cf0fde0`
+(previous base `71736c9f32`). The candidate carries the existing skill-gate and
+TUI patches in source, rather than depending on a separate renderer overlay.
+Publication does not activate the fork in an existing installation. Live
+adoption and restarts remain separate gates.
+
+The 2026-11-17 merge conflicted in six hunks, each resolved by keeping both
+sides: the kernel cell runner keeps the carried cwd save/restore and upstream's
+edited-module scan; staged skill replay keeps the carried target binding and
+locks and upstream's background-review scan origin; the TUI keeps the carried
+composer hints and upstream's paste expand/collapse hints; the TUI locale key
+index was regenerated. Upstream moved the branch probe's `ls-remote` to
+`source_check.remote_git_run`, so the carried missing-`ss` regression now
+patches that seam instead of `_git_run`; its assertions are unchanged.
 
 | Change | On `ss` | Upstream status | Next action |
 | --- | --- | --- | --- |
-| Kernel state across terminal `cd`, plus terminal RPC refusal shape | Yes, including missing-directory refusal and failed-restoration handling | [#123740](https://github.com/NousResearch/hermes-agent/pull/123740) open; its head lacks the later corrections | Refresh the focused PR from the verified fix, excluding this file |
+| Kernel state across terminal `cd`, plus terminal RPC refusal shape | Yes, including missing-directory refusal and failed-restoration handling | [#123740](https://github.com/NousResearch/hermes-agent/pull/123740) open (rechecked 2026-11-17); its head lacks the later corrections | Refresh the focused PR from the verified fix, excluding this file |
 | Externally owned skill-write approval and batch target binding | Candidate preserves the local repairs, including alias and ledger binding | Downstream carry | Run external-write and affected skill/batch regression coverage on each refresh |
 | Full-file skill rewrite review | Preview, summary and ordered batch folding recognize the advertised `patch` plus `content` shape and share approval's patch-shape validation | Downstream carry | Verify real staged diff/approval parity, invalid-shape refusal and unchanged target binding |
 | Legacy batch default-name approval | Both write gates stage each operation's resolved name, preserving explicit per-operation overrides and ordered replay | Downstream carry | Verify staged preview and approval through global and external-only gates |
 | Slash aliases resolve but stay out of help and completion | Candidate preserves the local repair | Downstream carry | Keep CLI, gateway and TUI behavior consistent |
 | TUI cold-start theme, composer status, mouse hover and useful status line | Candidate incorporates all six overlay patches, regenerates the locale key index and documents the CLI/TUI status-field differences | Downstream carry | Run the full TUI check and build; retire the old overlay only during separately approved adoption |
-| Fork source-update target | Candidate maps the `main` source channel, passive checks and banner baseline to `origin/ss` only for `ss-o/hermes-agent` | Fork-specific policy, not an upstream submission | Keep real Git check/apply, passive-check, missing-ref, cache and repository-isolation coverage |
-| Untrust a vanished project directory | No | [#123127](https://github.com/NousResearch/hermes-agent/pull/123127) open | Recheck on current upstream before deciding to carry it |
+| Fork source-update target | Candidate maps the `main` source channel, passive checks and banner baseline to `origin/ss` only for `ss-o/hermes-agent` | Fork-specific policy, not an upstream submission | Keep real Git check/apply, passive-check, missing-ref, cache and repository-isolation coverage; patch remote probes at `remote_git_run` |
+| Untrust a vanished project directory | No | [#123127](https://github.com/NousResearch/hermes-agent/pull/123127) open (rechecked 2026-11-17) | Recheck on current upstream before deciding to carry it |
+
+Verification of the 2026-11-17 candidate (Linux arm64, isolated `HOME` and
+`HERMES_HOME`): the TUI check and build, `python scripts/check --base upstream/main`,
+and the Python files covering carried fixes and their callers pass, apart from
+`tests/tui_gateway/test_protocol.py::test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry`.
+Its one-second bound also fails on unmodified upstream `707cf0fde0` on the same
+host, so it is a host timing result, not a carried regression. Independent
+review of this candidate is still required before publication.
 
 Each carried fix needs a small commit, regression coverage, and a row here.
 Use separate topic branches based on upstream for submissions; do not submit

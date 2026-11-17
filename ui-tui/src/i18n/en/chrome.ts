@@ -27,7 +27,9 @@ export const chromeEn = {
     steerShortHint: 'Enter: steer · Ctrl+C: stop',
     stopHint: 'Ctrl+C: stop',
     idleHint: (editorKey: string) => `/ commands · @ files · ? help · ${editorKey} editor`,
-    idleShortHint: '/ commands · @ files · ? help'
+    idleShortHint: '/ commands · @ files · ? help',
+    pasteExpandHint: 'Ctrl+P expand paste to read / edit',
+    pasteCollapseHint: 'editing pasted text · Ctrl+P collapse'
   },
   hints: {
     copySelection: 'copy selection',
@@ -39,10 +41,12 @@ export const chromeEn = {
     redraw: 'redraw / repaint',
     paste: 'paste text; /paste attaches clipboard image',
     discardDraft: 'discard draft (recall with ↑)',
+    rewindPicker: 'empty composer, idle: Esc then Esc browses earlier prompts to edit (/rewind)',
     applyCompletion: 'apply completion',
     arrows: 'completions / queue edit / history',
     sessionSwitcher: 'open live session switcher (deletes queued message while editing)',
     expandAgents: 'expand live agents (keeps your draft)',
+    pasteExpand: 'expand / collapse a pasted-text chip (sent pastes when the composer has none)',
     collapseAgents: 'collapse / restore live agent preview',
     modelPicker: 'open model picker (keeps your draft; applies to next turn mid-stream)',
     homeEnd: 'home / end of line',
